@@ -19,6 +19,9 @@ export interface ChargerCdr {
 
 export interface ChargerStatus {
   evse_state?: number;
+  is_car_connected?: boolean;
+  is_charging?: boolean;
+  charge_enabled?: boolean;
   charge_power?: number; // kW
   charge_current?: number; // A
   current_offered?: number; // A
@@ -172,16 +175,35 @@ export class VoltieClient {
   }
 }
 
-export function isCarConnected(state: number | undefined): boolean {
+// The firmware's own booleans are authoritative; evse_state is the fallback
+// for older API versions that do not report them.
+export function isCarConnected(status: ChargerStatus): boolean {
+  if (typeof status.is_car_connected === 'boolean') {
+    return status.is_car_connected;
+  }
+  const state = status.evse_state;
   return state === EvseState.ConnectedNotCharging
     || state === EvseState.Charging
     || state === EvseState.ChargingVentilation;
 }
 
-export function isCharging(state: number | undefined): boolean {
+export function isCharging(status: ChargerStatus): boolean {
+  if (typeof status.is_charging === 'boolean') {
+    return status.is_charging;
+  }
+  const state = status.evse_state;
   return state === EvseState.Charging || state === EvseState.ChargingVentilation;
 }
 
-export function isFault(state: number | undefined): boolean {
-  return typeof state === 'number' && state >= 5;
+/**
+ * Outlet "On" state: an accepted start command shows up immediately as
+ * charge_enabled even while the car is still ramping up, so the switch does
+ * not appear to bounce back between the tap and the first amps flowing.
+ */
+export function isSwitchedOn(status: ChargerStatus): boolean {
+  return isCharging(status) || status.charge_enabled === true;
+}
+
+export function isFault(status: ChargerStatus): boolean {
+  return typeof status.evse_state === 'number' && status.evse_state >= 5;
 }

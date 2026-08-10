@@ -4,8 +4,8 @@ import {
   ChargerConfig,
   ChargerStatus,
   isCarConnected,
-  isCharging,
   isFault,
+  isSwitchedOn,
   VoltieClient,
 } from './client';
 import type { ChargerConfigEntry, VoltieChargerPlatform } from './platform';
@@ -54,16 +54,17 @@ export class VoltieChargerAccessory {
       .setCharacteristic(C.Model, 'Voltie Charger')
       .setCharacteristic(C.SerialNumber, `${entry.host}:${entry.port}`);
 
-    // Outlet: On = charging, OutletInUse = car connected. Eve power/energy
-    // characteristics live here so Eve-style apps chart consumption.
+    // Outlet: On = charging or charging enabled, OutletInUse = car connected.
+    // Eve power/energy characteristics live here so Eve-style apps chart
+    // consumption.
     this.outletService = this.accessory.getService(S.Outlet)
       ?? this.accessory.addService(S.Outlet, entry.name);
     this.outletService.setPrimaryService(true);
     this.outletService.getCharacteristic(C.On)
-      .onGet(() => this.guarded(() => isCharging(this.status.evse_state)))
+      .onGet(() => this.guarded(() => isSwitchedOn(this.status)))
       .onSet((value) => this.setCharging(value === true));
     this.outletService.getCharacteristic(C.OutletInUse)
-      .onGet(() => this.guarded(() => isCarConnected(this.status.evse_state)));
+      .onGet(() => this.guarded(() => isCarConnected(this.status)));
     for (const eveChar of Object.values(this.platform.eve)) {
       if (!this.outletService.testCharacteristic(eveChar)) {
         this.outletService.addCharacteristic(eveChar);
@@ -99,7 +100,7 @@ export class VoltieChargerAccessory {
     this.currentService = existing
       ?? this.accessory.addService(S.Lightbulb, `${this.entry.name} Current`, 'charging-current');
     this.currentService.getCharacteristic(C.On)
-      .onGet(() => this.guarded(() => isCharging(this.status.evse_state)))
+      .onGet(() => this.guarded(() => isSwitchedOn(this.status)))
       .onSet((value) => this.setCharging(value === true));
     this.currentService.getCharacteristic(C.Brightness)
       .onGet(() => this.guarded(() => this.percentFromAmps(this.config.conf_current_limit)))
@@ -267,10 +268,10 @@ export class VoltieChargerAccessory {
 
   private pushState(): void {
     const { Characteristic: C } = this.platform;
-    const charging = isCharging(this.status.evse_state);
+    const charging = isSwitchedOn(this.status);
 
     this.outletService.updateCharacteristic(C.On, charging);
-    this.outletService.updateCharacteristic(C.OutletInUse, isCarConnected(this.status.evse_state));
+    this.outletService.updateCharacteristic(C.OutletInUse, isCarConnected(this.status));
     this.outletService.updateCharacteristic(
       this.platform.eve.CurrentConsumption,
       Math.max(0, (this.status.charge_power ?? 0) * 1000),
@@ -311,10 +312,7 @@ export class VoltieChargerAccessory {
     if (typeof this.status.charger_id === 'string' && this.status.charger_id) {
       info.updateCharacteristic(C.SerialNumber, this.status.charger_id);
     }
-    const version = [this.status.sw_ver, this.status.fw_ver]
-      .filter((v) => v !== undefined && v !== null)
-      .map(String)
-      .join(' / ');
+    const version = formatSwVersion(this.status.sw_ver);
     if (version) {
       info.updateCharacteristic(C.FirmwareRevision, version);
     }
@@ -325,14 +323,14 @@ export class VoltieChargerAccessory {
 
   private carSensorValue(): number {
     const { ContactSensorState } = this.platform.Characteristic;
-    return isCarConnected(this.status.evse_state)
+    return isCarConnected(this.status)
       ? ContactSensorState.CONTACT_NOT_DETECTED
       : ContactSensorState.CONTACT_DETECTED;
   }
 
   private faultSensorValue(): number {
     const { ContactSensorState } = this.platform.Characteristic;
-    return isFault(this.status.evse_state)
+    return isFault(this.status)
       ? ContactSensorState.CONTACT_NOT_DETECTED
       : ContactSensorState.CONTACT_DETECTED;
   }
@@ -379,4 +377,16 @@ export class VoltieChargerAccessory {
       this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,
     );
   }
+}
+
+/** Decode the decimal-packed software version (e.g. 1003042 -> '1.3.42'). */
+function formatSwVersion(raw: unknown): string | undefined {
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    return undefined;
+  }
+  const major = Math.floor(value / 1_000_000);
+  const minor = Math.floor(value / 1_000) % 1_000;
+  const patch = value % 1_000;
+  return `${major}.${minor}.${patch}`;
 }
