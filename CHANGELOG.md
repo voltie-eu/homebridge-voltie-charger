@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- A charger entry without a host (the blank row the config UI saves when the list is left untouched) is no longer logged as an error; with discovery on it is reported as a normal info line
+
 ## 0.1.1
 
 Verification-readiness fixes, no functional changes.

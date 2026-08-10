@@ -85,7 +85,14 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
 
     for (const entry of entries) {
       if (!entry.host) {
-        this.log.error('Skipping charger entry without "host": %s', JSON.stringify(entry));
+        // The config UI saves a blank row when the user leaves the (optional)
+        // Chargers list untouched; with discovery on that is a normal setup,
+        // not an error.
+        if (this.config.discovery !== false) {
+          this.log.info('Ignoring charger entry without "host" (discovery is on; the Chargers list may stay empty)');
+        } else {
+          this.log.warn('Ignoring charger entry without "host": %s', JSON.stringify(entry));
+        }
         continue;
       }
       const uuid = this.api.hap.uuid.generate(`voltie-charger:${entry.host}:${entry.port ?? DEFAULT_PORT}`);
