@@ -1,5 +1,8 @@
 # homebridge-voltie-charger
 
+[![verified-by-homebridge](https://img.shields.io/badge/homebridge-verified-blueviolet?color=%23491F59&style=for-the-badge&logoColor=%23FFFFFF&logo=homebridge)](https://github.com/homebridge/homebridge/wiki/Verified-Plugins)
+[![npm](https://img.shields.io/npm/v/homebridge-voltie-charger?style=for-the-badge)](https://www.npmjs.com/package/homebridge-voltie-charger)
+
 Homebridge plugin for [Voltie](https://voltie.eu) EV chargers. Talks to the charger directly on your local network through its built-in HTTP API (v5.x, default port 5059), with no cloud connection required. Chargers on the local network are **discovered automatically** at startup via mDNS/Bonjour, so in the common case there is nothing to configure. (Restart Homebridge to pick up a charger added to the network later.)
 
 > Already running Home Assistant? Consider the official [Voltie Home Assistant integration](https://github.com/voltie-eu/homeassistant-voltie_charger) together with HA's built-in HomeKit Bridge instead, as it exposes far more entities. This plugin is for households that use Apple Home without Home Assistant.
