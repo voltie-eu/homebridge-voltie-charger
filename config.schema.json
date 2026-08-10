@@ -87,9 +87,29 @@
             },
             "singlePhaseSwitch": {
               "title": "Single-phase charging switch",
-              "type": "boolean",
-              "default": false,
-              "description": "Forces 1-phase charging (useful for solar surplus). Only on chargers that support phase switching."
+              "type": "string",
+              "default": "auto",
+              "oneOf": [
+                {
+                  "title": "Auto (only when the charger supports it)",
+                  "enum": [
+                    "auto"
+                  ]
+                },
+                {
+                  "title": "Always show",
+                  "enum": [
+                    "show"
+                  ]
+                },
+                {
+                  "title": "Hide",
+                  "enum": [
+                    "hide"
+                  ]
+                }
+              ],
+              "description": "Forces 1-phase charging (useful for solar surplus). Auto shows the switch only on chargers that report phase-switching support."
             },
             "rebootSwitch": {
               "title": "Reboot switch",

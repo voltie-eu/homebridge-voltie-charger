@@ -37,7 +37,7 @@ export interface ChargerConfigEntry {
   faultSensor?: boolean;
   accessLock?: boolean;
   autostartSwitch?: boolean;
-  singlePhaseSwitch?: boolean;
+  singlePhaseSwitch?: boolean | string;
   rebootSwitch?: boolean;
   rearLedLight?: boolean;
 }

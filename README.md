@@ -16,7 +16,7 @@ HomeKit has no native EV charger category, so the charger is mapped onto standar
 | **Contact sensor** ("Fault") | Opens when the EVSE reports a fault state (GFCI, no ground, overtemperature, ...). |
 | **Lock** ("RFID Lock", optional) | Locked = charging requires an RFID card, Unlocked = free charging. |
 | **Switch** ("Autostart", optional) | The charger's autostart setting. |
-| **Switch** ("Single Phase", optional) | Forces 1-phase charging (for solar surplus), on chargers that support phase switching. |
+| **Switch** ("Single Phase", automatic) | Forces 1-phase charging (for solar surplus). Appears only on chargers that support phase switching; `singlePhaseSwitch: "show"`/`"hide"` overrides. |
 | **Switch** ("Reboot", optional) | Momentary switch that reboots the charger. |
 | **Lightbulb** ("Rear LED", optional) | The charger's rear LED strip as a color lamp (effect expires after an hour, a firmware limit). |
 

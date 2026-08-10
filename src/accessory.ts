@@ -193,20 +193,73 @@ export class VoltieChargerAccessory {
       .onSet((value) => this.setAutostart(value === true));
   }
 
+  /**
+   * 'auto' (default): shown only once the charger reports phase-switching
+   * support; 'show'/'hide' (or true/false) override in either direction.
+   */
+  private singlePhaseMode(): 'show' | 'hide' | 'auto' {
+    const value = this.entry.singlePhaseSwitch;
+    if (value === true || value === 'show') {
+      return 'show';
+    }
+    if (value === false || value === 'hide') {
+      return 'hide';
+    }
+    return 'auto';
+  }
+
+  private singlePhaseSupported(): boolean {
+    const conf = this.config.conf_force_single_phase;
+    if (conf !== 0 && conf !== 1) {
+      // 2 = not supported by hardware, 3/undefined = unknown (spec 4.7)
+      return false;
+    }
+    // Forcing single phase is meaningless on a single-phase installation.
+    return typeof this.status.phases !== 'number' || this.status.phases >= 3;
+  }
+
   private setupSinglePhaseSwitch(): void {
-    const { Service: S, Characteristic: C } = this.platform;
-    const existing = this.accessory.getServiceById(S.Switch, 'single-phase');
-    if (this.entry.singlePhaseSwitch !== true) {
+    const mode = this.singlePhaseMode();
+    const existing = this.accessory.getServiceById(this.platform.Service.Switch, 'single-phase');
+    if (mode === 'hide') {
       if (existing) {
         this.accessory.removeService(existing);
       }
       return;
     }
-    this.singlePhaseService = existing
+    // 'auto' with a cached service means it was supported last time; keep it
+    // alive so a restart doesn't flap the accessory before the first poll.
+    if (mode === 'show' || existing) {
+      this.attachSinglePhaseService();
+    }
+  }
+
+  private attachSinglePhaseService(): void {
+    if (this.singlePhaseService) {
+      return;
+    }
+    const { Service: S, Characteristic: C } = this.platform;
+    this.singlePhaseService = this.accessory.getServiceById(S.Switch, 'single-phase')
       ?? this.accessory.addService(S.Switch, `${this.entry.name} Single Phase`, 'single-phase');
     this.singlePhaseService.getCharacteristic(C.On)
       .onGet(() => this.guarded(() => this.config.conf_force_single_phase === 1))
       .onSet((value) => this.setForceSinglePhase(value === true));
+  }
+
+  private syncSinglePhaseVisibility(): void {
+    if (this.singlePhaseMode() !== 'auto') {
+      return;
+    }
+    if (this.singlePhaseSupported()) {
+      if (!this.singlePhaseService) {
+        this.platform.log.info('[%s] Phase switching supported; adding Single Phase switch', this.entry.name);
+        this.attachSinglePhaseService();
+      }
+    } else if (this.singlePhaseService) {
+      this.platform.log.info('[%s] Phase switching not supported; removing Single Phase switch', this.entry.name);
+      this.accessory.removeService(this.singlePhaseService);
+      this.singlePhaseService = undefined;
+    }
   }
 
   private setupRebootSwitch(): void {
@@ -452,6 +505,7 @@ export class VoltieChargerAccessory {
     this.lockService?.updateCharacteristic(C.LockCurrentState, this.lockStateValue());
     this.lockService?.updateCharacteristic(C.LockTargetState, this.lockStateValue());
     this.autostartService?.updateCharacteristic(C.On, this.config.conf_autostart_enabled === 1);
+    this.syncSinglePhaseVisibility();
     this.singlePhaseService?.updateCharacteristic(C.On, this.config.conf_force_single_phase === 1);
 
     this.populateAccessoryInfo();
