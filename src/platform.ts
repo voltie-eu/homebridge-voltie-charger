@@ -11,7 +11,7 @@ import type {
 } from 'homebridge';
 
 import { VoltieChargerAccessory } from './accessory';
-import { VoltieClient } from './client';
+import { VoltieApiError, VoltieClient } from './client';
 import { discoverChargers } from './discovery';
 import { buildEveCharacteristics, EveCharacteristics } from './eve';
 import {
@@ -93,7 +93,7 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
         this.log.warn('Duplicate charger entry for %s:%d ignored', entry.host, entry.port ?? DEFAULT_PORT);
         continue;
       }
-      this.startCharger(uuid, entry, undefined);
+      this.startCharger(uuid, this.withDefaultCredentials(entry), undefined);
       handled.add(uuid);
     }
 
@@ -173,13 +173,24 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
       // in HomeKit as a permanent "No Response" tile.
       const uuid = this.api.hap.uuid.generate(`voltie-discovered:${charger.shortId}`);
       const alreadyCached = this.cachedAccessories.some((cached) => cached.UUID === uuid);
-      if (!alreadyCached && !(await this.probeCharger(charger.address))) {
-        this.log.info(
-          'Found charger %s at %s, but its HTTP API is not reachable; skipping. '
-          + 'Enable the HTTP API in the Voltie app to use it with HomeKit.',
-          charger.shortId.toUpperCase(), charger.address,
-        );
-        return;
+      if (!alreadyCached) {
+        const probe = await this.probeCharger(charger.address);
+        if (probe === 'auth') {
+          this.log.info(
+            'Found charger %s at %s, but its HTTP API requires authentication; skipping. '
+            + 'Set the platform-level username/password, or add the charger manually with credentials.',
+            charger.shortId.toUpperCase(), charger.address,
+          );
+          return;
+        }
+        if (probe === 'fail') {
+          this.log.info(
+            'Found charger %s at %s, but its HTTP API is not reachable; skipping. '
+            + 'Enable the HTTP API in the Voltie app to use it with HomeKit.',
+            charger.shortId.toUpperCase(), charger.address,
+          );
+          return;
+        }
       }
       const ctx: DiscoveredContext = {
         name: `Voltie ${charger.shortId.toUpperCase()}`,
@@ -187,18 +198,36 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
         port: DEFAULT_PORT,
         shortId: charger.shortId,
       };
-      this.startCharger(uuid, { name: ctx.name, host: ctx.host, port: ctx.port }, ctx);
+      this.startCharger(uuid, this.withDefaultCredentials({ name: ctx.name, host: ctx.host, port: ctx.port }), ctx);
       handled.add(uuid);
     }));
   }
 
-  private async probeCharger(address: string): Promise<boolean> {
+  private async probeCharger(address: string): Promise<'ok' | 'auth' | 'fail'> {
+    const { username, password } = this.defaultCredentials();
     try {
-      await new VoltieClient(address, DEFAULT_PORT).getStatus();
-      return true;
-    } catch {
-      return false;
+      await new VoltieClient(address, DEFAULT_PORT, username, password).getStatus();
+      return 'ok';
+    } catch (error) {
+      return error instanceof VoltieApiError && error.message.includes('Authentication')
+        ? 'auth'
+        : 'fail';
     }
+  }
+
+  /** Platform-level credentials apply to discovered chargers and to manual
+   * entries that don't carry their own. */
+  private defaultCredentials(): { username?: string; password?: string } {
+    const username = typeof this.config.username === 'string' && this.config.username ? this.config.username : undefined;
+    const password = typeof this.config.password === 'string' && this.config.password ? this.config.password : undefined;
+    return username && password ? { username, password } : {};
+  }
+
+  private withDefaultCredentials(entry: ChargerConfigEntry): ChargerConfigEntry {
+    if (entry.username && entry.password) {
+      return entry;
+    }
+    return { ...entry, ...this.defaultCredentials() };
   }
 
   private startCharger(uuid: string, entry: ChargerConfigEntry, discovered: DiscoveredContext | undefined): void {

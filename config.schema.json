@@ -12,6 +12,18 @@
         "default": true,
         "description": "Find Voltie chargers on the local network automatically. Chargers listed below are used as-is; discovery adds any others it finds."
       },
+      "username": {
+        "title": "Username (all chargers)",
+        "type": "string",
+        "description": "Used for every charger, including discovered ones, unless a charger entry has its own credentials. Only needed when the HTTP API has authentication enabled."
+      },
+      "password": {
+        "title": "Password (all chargers)",
+        "type": "string",
+        "x-schema-form": {
+          "type": "password"
+        }
+      },
       "chargers": {
         "title": "Chargers",
         "type": "array",

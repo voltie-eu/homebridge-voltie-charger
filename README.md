@@ -56,7 +56,7 @@ Chargers can also be configured explicitly via the Homebridge UI, or manually; e
 }
 ```
 
-`username`/`password` are only needed when the charger's HTTP API has authentication enabled. `idTag` lets the start command carry an RFID id when the charger is in RFID mode.
+`username`/`password` are only needed when the charger's HTTP API has authentication enabled; set them at the platform level to cover every charger (including discovered ones), or per charger entry to override. `idTag` lets the start command carry an RFID id when the charger is in RFID mode.
 
 ## Notes and limitations
 

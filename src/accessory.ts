@@ -526,6 +526,16 @@ export class VoltieChargerAccessory {
       this.pushState();
     } catch (error) {
       this.consecutiveFailures += 1;
+      if (
+        this.consecutiveFailures === 1
+        && error instanceof VoltieApiError
+        && error.message.includes('Authentication')
+      ) {
+        this.platform.log.warn(
+          '[%s] The charger rejected the credentials; check the username/password in the plugin config',
+          this.entry.name,
+        );
+      }
       if (this.consecutiveFailures === FAILURES_BEFORE_UNREACHABLE) {
         if (error instanceof VoltieApiError && error.code === 24) {
           this.platform.log.warn(
