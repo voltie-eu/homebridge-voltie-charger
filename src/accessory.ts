@@ -352,6 +352,9 @@ export class VoltieChargerAccessory {
 
   private percentFromAmps(amps: number | undefined): number {
     const max = this.maxAmps();
+    if (max <= CURRENT_LIMIT_MIN_A) {
+      return 100;
+    }
     const value = typeof amps === 'number' ? amps : max;
     const clamped = Math.min(max, Math.max(CURRENT_LIMIT_MIN_A, value));
     return Math.round(((clamped - CURRENT_LIMIT_MIN_A) / (max - CURRENT_LIMIT_MIN_A)) * 100);

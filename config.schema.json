@@ -6,6 +6,12 @@
   "schema": {
     "type": "object",
     "properties": {
+      "discovery": {
+        "title": "Automatic discovery (mDNS/Bonjour)",
+        "type": "boolean",
+        "default": true,
+        "description": "Find Voltie chargers on the local network automatically. Chargers listed below are used as-is; discovery adds any others it finds."
+      },
       "chargers": {
         "title": "Chargers",
         "type": "array",

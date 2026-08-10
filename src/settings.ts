@@ -13,3 +13,5 @@ export const CURRENT_LIMIT_FALLBACK_MAX_A = 32;
 
 // Charging session name reported to the charger on /start.
 export const START_NAME = 'homebridge';
+
+export const DISCOVERY_TIMEOUT_MS = 8000;
