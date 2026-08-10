@@ -1,0 +1,43 @@
+{
+  "name": "homebridge-voltie-charger",
+  "displayName": "Voltie Charger",
+  "version": "0.1.0",
+  "description": "Homebridge plugin for Voltie EV chargers using the charger's local HTTP API (v5.x).",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/voltie-eu/homebridge-voltie-charger.git"
+  },
+  "bugs": {
+    "url": "https://github.com/voltie-eu/homebridge-voltie-charger/issues"
+  },
+  "keywords": [
+    "homebridge-plugin",
+    "voltie",
+    "ev charger",
+    "evse",
+    "wallbox",
+    "homekit"
+  ],
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "config.schema.json",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18.15.0",
+    "homebridge": "^1.8.0 || ^2.0.0-beta.0"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc",
+    "watch": "tsc --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "homebridge": "^1.8.4",
+    "typescript": "^5.5.4"
+  }
+}

@@ -1,0 +1,85 @@
+{
+  "pluginAlias": "VoltieCharger",
+  "pluginType": "platform",
+  "singular": true,
+  "headerDisplay": "Connects Voltie EV chargers on your local network via the charger's HTTP API (default port 5059). Enable the HTTP API on the charger first.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "chargers": {
+        "title": "Chargers",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "title": "Name",
+              "type": "string",
+              "placeholder": "Voltie Charger"
+            },
+            "host": {
+              "title": "Host / IP address",
+              "type": "string",
+              "required": true,
+              "format": "hostname"
+            },
+            "port": {
+              "title": "HTTP API port",
+              "type": "integer",
+              "default": 5059
+            },
+            "username": {
+              "title": "Username",
+              "type": "string",
+              "description": "Only needed if the charger's HTTP API has authentication enabled."
+            },
+            "password": {
+              "title": "Password",
+              "type": "string",
+              "x-schema-form": { "type": "password" }
+            },
+            "pollInterval": {
+              "title": "Poll interval (seconds)",
+              "type": "integer",
+              "default": 15,
+              "minimum": 5,
+              "maximum": 300
+            },
+            "idTag": {
+              "title": "RFID id_tag for remote start",
+              "type": "string",
+              "description": "Optional. Sent with the start command when the charger requires RFID authorization."
+            },
+            "currentControl": {
+              "title": "Charging current dimmer (Lightbulb)",
+              "type": "boolean",
+              "default": true,
+              "description": "Exposes the charging current limit as a dimmer: 0% = 6 A, 100% = hardware maximum. Siri can set it as a percentage."
+            },
+            "carConnectedSensor": {
+              "title": "Car connected sensor (Contact Sensor)",
+              "type": "boolean",
+              "default": true
+            },
+            "faultSensor": {
+              "title": "Fault sensor (Contact Sensor)",
+              "type": "boolean",
+              "default": true
+            },
+            "accessLock": {
+              "title": "RFID access lock (Lock)",
+              "type": "boolean",
+              "default": false,
+              "description": "Locked = charging requires an RFID card, Unlocked = free charging."
+            },
+            "autostartSwitch": {
+              "title": "Autostart switch",
+              "type": "boolean",
+              "default": false
+            }
+          }
+        }
+      }
+    }
+  }
+}
