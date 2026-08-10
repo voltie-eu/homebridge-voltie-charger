@@ -29,6 +29,71 @@
           "type": "password"
         }
       },
+      "currentControl": {
+        "title": "Charging current dimmer (Lightbulb) (all chargers)",
+        "type": "boolean",
+        "default": true,
+        "description": "Exposes the charging current limit as a dimmer: 0% = 6 A, 100% = hardware maximum. Siri can set it as a percentage."
+      },
+      "carConnectedSensor": {
+        "title": "Car connected sensor (Contact Sensor) (all chargers)",
+        "type": "boolean",
+        "default": true
+      },
+      "faultSensor": {
+        "title": "Fault sensor (Contact Sensor) (all chargers)",
+        "type": "boolean",
+        "default": true
+      },
+      "accessLock": {
+        "title": "RFID access lock (Lock) (all chargers)",
+        "type": "boolean",
+        "default": false,
+        "description": "Locked = charging requires an RFID card, Unlocked = free charging."
+      },
+      "autostartSwitch": {
+        "title": "Autostart switch (all chargers)",
+        "type": "boolean",
+        "default": false
+      },
+      "singlePhaseSwitch": {
+        "title": "Single-phase charging switch (all chargers)",
+        "type": "string",
+        "default": "auto",
+        "oneOf": [
+          {
+            "title": "Auto (only when the charger supports it)",
+            "enum": [
+              "auto"
+            ]
+          },
+          {
+            "title": "Always show",
+            "enum": [
+              "show"
+            ]
+          },
+          {
+            "title": "Hide",
+            "enum": [
+              "hide"
+            ]
+          }
+        ],
+        "description": "Forces 1-phase charging (useful for solar surplus). Auto shows the switch only on chargers that report phase-switching support."
+      },
+      "rebootSwitch": {
+        "title": "Reboot switch (all chargers)",
+        "type": "boolean",
+        "default": false,
+        "description": "Momentary switch that reboots the charger. Keep disabled unless you need it."
+      },
+      "rearLedLight": {
+        "title": "Rear LED light (color Lightbulb) (all chargers)",
+        "type": "boolean",
+        "default": false,
+        "description": "Exposes the charger's rear LED strip as a color lamp. The effect expires after an hour (firmware limit)."
+      },
       "chargers": {
         "title": "Chargers",
         "type": "array",

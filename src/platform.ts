@@ -124,7 +124,7 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
         const ctx = cached.context.discovered as DiscoveredContext | undefined;
         if (ctx?.host && !coveredByManual(ctx.host, ctx.shortId ?? '')) {
           this.log.info('Keeping previously discovered charger: %s (%s)', cached.displayName, ctx.host);
-          this.startCharger(cached.UUID, { name: ctx.name, host: ctx.host, port: ctx.port }, ctx);
+          this.startCharger(cached.UUID, this.withDefaultCredentials({ name: ctx.name, host: ctx.host, port: ctx.port }), ctx);
           handled.add(cached.UUID);
         }
       }
@@ -206,6 +206,7 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
         shortId: charger.shortId,
       };
       this.startCharger(uuid, this.withDefaultCredentials({ name: ctx.name, host: ctx.host, port: ctx.port }), ctx);
+
       handled.add(uuid);
     }));
   }
@@ -231,10 +232,23 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
   }
 
   private withDefaultCredentials(entry: ChargerConfigEntry): ChargerConfigEntry {
-    if (entry.username && entry.password) {
-      return entry;
+    const merged: ChargerConfigEntry = { ...entry };
+    if (!(merged.username && merged.password)) {
+      Object.assign(merged, this.defaultCredentials());
     }
-    return { ...entry, ...this.defaultCredentials() };
+    // Feature toggles set on the platform act as defaults for every charger,
+    // so discovered chargers (which have no config entry) can enable the
+    // optional services too; per-charger settings win.
+    const featureKeys = [
+      'pollInterval', 'idTag', 'currentControl', 'carConnectedSensor', 'faultSensor',
+      'accessLock', 'autostartSwitch', 'singlePhaseSwitch', 'rebootSwitch', 'rearLedLight',
+    ] as const;
+    for (const key of featureKeys) {
+      if (merged[key] === undefined && this.config[key] !== undefined) {
+        (merged as Record<string, unknown>)[key] = this.config[key];
+      }
+    }
+    return merged;
   }
 
   private startCharger(uuid: string, entry: ChargerConfigEntry, discovered: DiscoveredContext | undefined): void {
