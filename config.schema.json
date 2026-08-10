@@ -6,6 +6,11 @@
   "schema": {
     "type": "object",
     "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "default": "Voltie Charger"
+      },
       "discovery": {
         "title": "Automatic discovery (mDNS/Bonjour)",
         "type": "boolean",
@@ -38,7 +43,6 @@
             "host": {
               "title": "Host / IP address",
               "type": "string",
-              "required": true,
               "format": "hostname"
             },
             "port": {
@@ -135,7 +139,10 @@
               "default": false,
               "description": "Exposes the charger's rear LED strip as a color lamp. The effect expires after an hour (firmware limit)."
             }
-          }
+          },
+          "required": [
+            "host"
+          ]
         }
       }
     }

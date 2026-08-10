@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1
+
+Verification-readiness fixes, no functional changes.
+
+- config.schema.json: strict JSON Schema `required` array instead of inline boolean, top-level `name` property
+- package.json: `supports-hap` keyword, explicit `homepage`, tidied homebridge engines range
+
 ## 0.1.0
 
 Initial release.
