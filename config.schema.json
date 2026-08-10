@@ -45,6 +45,12 @@
         "type": "boolean",
         "default": true
       },
+      "chargeCompleteSensor": {
+        "title": "Charge complete sensor (Contact Sensor) (all chargers)",
+        "type": "boolean",
+        "default": true,
+        "description": "Opens when the car finishes charging on its own (typically full) while still plugged in. A deliberate stop does not trigger it. Ideal for a \"car is charged\" notification."
+      },
       "accessLock": {
         "title": "RFID access lock (Lock) (all chargers)",
         "type": "boolean",
@@ -154,6 +160,12 @@
               "title": "Fault sensor (Contact Sensor)",
               "type": "boolean",
               "default": true
+            },
+            "chargeCompleteSensor": {
+              "title": "Charge complete sensor (Contact Sensor)",
+              "type": "boolean",
+              "default": true,
+              "description": "Opens when the car finishes charging on its own (typically full) while still plugged in. A deliberate stop does not trigger it. Ideal for a \"car is charged\" notification."
             },
             "accessLock": {
               "title": "RFID access lock (Lock)",

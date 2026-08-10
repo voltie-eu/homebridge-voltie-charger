@@ -36,6 +36,7 @@ export interface ChargerConfigEntry {
   currentControl?: boolean;
   carConnectedSensor?: boolean;
   faultSensor?: boolean;
+  chargeCompleteSensor?: boolean;
   accessLock?: boolean;
   autostartSwitch?: boolean;
   singlePhaseSwitch?: boolean | string;
@@ -241,7 +242,7 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
     // optional services too; per-charger settings win.
     const featureKeys = [
       'pollInterval', 'idTag', 'currentControl', 'carConnectedSensor', 'faultSensor',
-      'accessLock', 'autostartSwitch', 'singlePhaseSwitch', 'rebootSwitch', 'rearLedLight',
+      'chargeCompleteSensor', 'accessLock', 'autostartSwitch', 'singlePhaseSwitch', 'rebootSwitch', 'rearLedLight',
     ] as const;
     for (const key of featureKeys) {
       if (merged[key] === undefined && this.config[key] !== undefined) {

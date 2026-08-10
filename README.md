@@ -17,6 +17,7 @@ HomeKit has no native EV charger category, so the charger is mapped onto standar
 | **Lightbulb dimmer** ("Current") | Charging current limit: 0% = 6 A, 100% = the charger's hardware maximum (up to 32 A). On/off also starts/stops charging. Siri: *"Set the charger current to 50%"* |
 | **Contact sensor** ("Car Connected") | Opens when a car is plugged in: use it to trigger automations. |
 | **Contact sensor** ("Fault") | Opens when the EVSE reports a fault state (GFCI, no ground, overtemperature, ...). |
+| **Contact sensor** ("Charge Complete") | Opens when the car finishes charging on its own while still plugged in; a deliberate stop does not trigger it. Ideal for a "car is charged" notification. |
 | **Lock** ("RFID Lock", optional) | Locked = charging requires an RFID card, Unlocked = free charging. |
 | **Switch** ("Autostart", optional) | The charger's autostart setting. |
 | **Switch** ("Single Phase", automatic) | Forces 1-phase charging (for solar surplus). Appears only on chargers that support phase switching; `singlePhaseSwitch: "show"`/`"hide"` overrides. |
@@ -60,6 +61,14 @@ Chargers can also be configured explicitly via the Homebridge UI, or manually; e
 ```
 
 `username`/`password` are only needed when the charger's HTTP API has authentication enabled; set them at the platform level to cover every charger (including discovered ones), or per charger entry to override. `idTag` lets the start command carry an RFID id when the charger is in RFID mode.
+
+## Automation ideas
+
+- **"Car is charged" notification**: automate on the *Charge Complete* contact sensor opening. It only fires when the car stops drawing on its own while still plugged in — a manual stop does not trigger it.
+- **Plug-in reminder or actions**: automate on the *Car Connected* sensor opening (e.g. turn on the garage light, start charging if autostart is off).
+- **Solar surplus charging**: on phase-switching chargers, flip the *Single Phase* switch from a scene or schedule to limit charging to one phase while your inverter covers it.
+- **Fault alert**: automate a notification on the *Fault* sensor opening.
+- Siri understands the services by name: *"Set the charger current to 50%"*, *"Turn on the charger"*, *"Set the charger rear LED to blue"*.
 
 ## Notes and limitations
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.4
+
+- New: **Charge Complete** contact sensor (default on) — opens when the car finishes charging on its own while still plugged in; a deliberate stop does not trigger it. Ideal for a "car is charged" notification
+- Fixed phantom lock/switch change notifications on child-bridge restart: no fabricated states are reported before the first successful poll
+- A config field missing from one poll keeps its last known value instead of flipping states; the RFID lock only changes on a definite value
+- Service display names now include the charger name (e.g. "Voltie 77ED RFID Lock") so push notifications identify the charger; user renames are preserved
+- npm publishing via GitHub Actions on release
+
 ## 0.1.3
 
 - Feature toggles (current dimmer, sensors, RFID lock, autostart, single-phase, reboot, rear LED) and pollInterval/idTag can now be set at the platform level too, acting as defaults for every charger, including discovered ones; per-charger entries still override

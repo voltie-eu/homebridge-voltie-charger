@@ -4,6 +4,7 @@ import {
   ChargerConfig,
   ChargerStatus,
   isCarConnected,
+  isCharging,
   isFault,
   isSwitchedOn,
   VoltieApiError,
@@ -32,6 +33,7 @@ export class VoltieChargerAccessory {
   private currentService?: Service;
   private carSensorService?: Service;
   private faultSensorService?: Service;
+  private chargeCompleteService?: Service;
   private lockService?: Service;
   private autostartService?: Service;
   private singlePhaseService?: Service;
@@ -42,10 +44,15 @@ export class VoltieChargerAccessory {
   private config: ChargerConfig = {};
   private consecutiveFailures = 0;
   private infoPopulated = false;
+  private hasPolled = false;
   // Bumped on every optimistic write and every poll start, so a poll response
   // that raced with a newer write (or a newer poll) is discarded instead of
   // snapping HomeKit back to stale values.
   private stateGeneration = 0;
+
+  private lastLockState?: number;
+  private prevActivelyCharging?: boolean;
+  private chargeComplete = false;
 
   private brightnessTimer?: NodeJS.Timeout;
   private refreshTimer?: NodeJS.Timeout;
@@ -91,6 +98,7 @@ export class VoltieChargerAccessory {
     this.setupCurrentService();
     this.setupCarSensor();
     this.setupFaultSensor();
+    this.setupChargeCompleteSensor();
     this.setupAccessLock();
     this.setupAutostartSwitch();
     this.setupSinglePhaseSwitch();
@@ -104,6 +112,7 @@ export class VoltieChargerAccessory {
       [this.currentService, 'Current'],
       [this.carSensorService, 'Car Connected'],
       [this.faultSensorService, 'Fault'],
+      [this.chargeCompleteService, 'Charge Complete'],
       [this.lockService, 'RFID Lock'],
       [this.autostartService, 'Autostart'],
       [this.singlePhaseService, 'Single Phase'],
@@ -187,6 +196,24 @@ export class VoltieChargerAccessory {
       ?? this.accessory.addService(S.ContactSensor, `${this.entry.name} Fault`, 'fault');
     this.faultSensorService.getCharacteristic(C.ContactSensorState)
       .onGet(() => this.guarded(() => this.faultSensorValue()));
+  }
+
+  private setupChargeCompleteSensor(): void {
+    const { Service: S, Characteristic: C } = this.platform;
+    const existing = this.accessory.getServiceById(S.ContactSensor, 'charge-complete');
+    if (this.entry.chargeCompleteSensor === false) {
+      if (existing) {
+        this.accessory.removeService(existing);
+      }
+      return;
+    }
+    this.chargeCompleteService = existing
+      ?? this.accessory.addService(S.ContactSensor, `${this.entry.name} Charge Complete`, 'charge-complete');
+    // Opens when the car stopped drawing on its own (typically full) while
+    // still plugged in and charging is still enabled; a deliberate stop
+    // (HomeKit, app, RFID) clears the enable flag first and must not fire.
+    this.chargeCompleteService.getCharacteristic(C.ContactSensorState)
+      .onGet(() => this.guarded(() => this.chargeCompleteValue()));
   }
 
   private setupAccessLock(): void {
@@ -355,13 +382,20 @@ export class VoltieChargerAccessory {
       });
   }
 
-  /** Set ConfiguredName once so single-tile sub-tiles get short labels while
-   * user renames from the Home app survive restarts. */
+  /**
+   * Default ConfiguredName carries the charger name too ("Voltie 77ED RFID
+   * Lock"), because push notifications show only room + service name, and
+   * with several chargers the bare label was ambiguous. Values renamed by
+   * the user in the Home app are left alone; our own earlier short-label
+   * defaults are migrated once.
+   */
   private labelService(service: Service, label: string): void {
     const { ConfiguredName } = this.platform.Characteristic;
     service.addOptionalCharacteristic(ConfiguredName);
-    if (!service.getCharacteristic(ConfiguredName).value) {
-      service.updateCharacteristic(ConfiguredName, label);
+    const current = service.getCharacteristic(ConfiguredName).value;
+    const desired = label === 'Charging' ? this.entry.name : `${this.entry.name} ${label}`;
+    if (!current || current === label) {
+      service.updateCharacteristic(ConfiguredName, desired);
     }
   }
 
@@ -522,7 +556,11 @@ export class VoltieChargerAccessory {
         return;
       }
       this.status = status;
-      this.config = config;
+      // Merge instead of replace: a field missing from one response (e.g.
+      // right after charger boot) keeps its last known value, so a single
+      // partial read cannot flip lock/switch states and spam notifications.
+      this.config = { ...this.config, ...config };
+      this.hasPolled = true;
       this.pushState();
     } catch (error) {
       this.consecutiveFailures += 1;
@@ -579,6 +617,8 @@ export class VoltieChargerAccessory {
     );
     this.carSensorService?.updateCharacteristic(C.ContactSensorState, this.carSensorValue());
     this.faultSensorService?.updateCharacteristic(C.ContactSensorState, this.faultSensorValue());
+    this.updateChargeComplete();
+    this.chargeCompleteService?.updateCharacteristic(C.ContactSensorState, this.chargeCompleteValue());
     this.lockService?.updateCharacteristic(C.LockCurrentState, this.lockStateValue());
     this.lockService?.updateCharacteristic(C.LockTargetState, this.lockStateValue());
     this.autostartService?.updateCharacteristic(C.On, this.config.conf_autostart_enabled === 1);
@@ -611,6 +651,33 @@ export class VoltieChargerAccessory {
 
   // ---- value mapping ----
 
+  private updateChargeComplete(): void {
+    const activelyCharging = isCharging(this.status);
+    const carConnected = isCarConnected(this.status);
+    if (
+      this.prevActivelyCharging === true
+      && !activelyCharging
+      && carConnected
+      && this.status.charge_enabled === true
+    ) {
+      if (!this.chargeComplete) {
+        this.platform.log.info('[%s] Charging finished (car stopped drawing while still enabled)', this.entry.name);
+      }
+      this.chargeComplete = true;
+    }
+    if (activelyCharging || !carConnected) {
+      this.chargeComplete = false;
+    }
+    this.prevActivelyCharging = activelyCharging;
+  }
+
+  private chargeCompleteValue(): number {
+    const { ContactSensorState } = this.platform.Characteristic;
+    return this.chargeComplete
+      ? ContactSensorState.CONTACT_NOT_DETECTED
+      : ContactSensorState.CONTACT_DETECTED;
+  }
+
   private carSensorValue(): number {
     const { ContactSensorState } = this.platform.Characteristic;
     return isCarConnected(this.status)
@@ -627,9 +694,14 @@ export class VoltieChargerAccessory {
 
   private lockStateValue(): number {
     const { LockCurrentState } = this.platform.Characteristic;
-    return this.config.conf_access_mode === 1
-      ? LockCurrentState.SECURED
-      : LockCurrentState.UNSECURED;
+    const mode = this.config.conf_access_mode;
+    if (mode === 1) {
+      this.lastLockState = LockCurrentState.SECURED;
+    } else if (mode === 0) {
+      this.lastLockState = LockCurrentState.UNSECURED;
+    }
+    // Transient/unknown values keep the previous state.
+    return this.lastLockState ?? LockCurrentState.UNSECURED;
   }
 
   private maxAmps(): number {
@@ -659,7 +731,10 @@ export class VoltieChargerAccessory {
   // ---- plumbing ----
 
   private guarded<T extends CharacteristicValue>(getter: () => T): T {
-    if (this.consecutiveFailures >= FAILURES_BEFORE_UNREACHABLE) {
+    // Before the first successful poll there is no real state to report;
+    // answering with defaults here made HomeKit send phantom lock/switch
+    // change notifications on every child-bridge restart.
+    if (!this.hasPolled || this.consecutiveFailures >= FAILURES_BEFORE_UNREACHABLE) {
       throw this.communicationError();
     }
     return getter();
