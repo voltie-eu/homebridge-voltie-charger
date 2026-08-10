@@ -96,6 +96,17 @@ export class VoltieChargerAccessory {
     this.setupSinglePhaseSwitch();
     this.setupRebootSwitch();
     this.setupRearLed();
+    // Linking the secondary services to the primary Outlet makes third-party
+    // HomeKit apps (Eve, Controller) render the charger as one grouped block.
+    for (const service of [
+      this.currentService, this.carSensorService, this.faultSensorService,
+      this.lockService, this.autostartService, this.singlePhaseService,
+      this.rebootService, this.rearLedService,
+    ]) {
+      if (service) {
+        this.outletService.addLinkedService(service);
+      }
+    }
 
     void this.poll();
     const timer = setInterval(() => void this.poll(), this.entry.pollInterval * 1000);
@@ -255,6 +266,7 @@ export class VoltieChargerAccessory {
     this.singlePhaseService.getCharacteristic(C.On)
       .onGet(() => this.guarded(() => this.config.conf_force_single_phase === 1))
       .onSet((value) => this.setForceSinglePhase(value === true));
+    this.outletService.addLinkedService(this.singlePhaseService);
   }
 
   private syncSinglePhaseVisibility(): void {
