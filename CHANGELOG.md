@@ -1,0 +1,14 @@
+# Changelog
+
+## 0.1.0
+
+Initial release.
+
+- Outlet (charging on/off, car-connected "in use", Eve power/energy/voltage/current)
+- Charging current limit as a dimmer (6 A .. hardware max)
+- Car-connected and fault contact sensors
+- Optional RFID access lock, autostart switch, reboot switch
+- Rear LED strip as a color lamp (with keep-alive past the firmware's 1 h effect expiry)
+- Single Phase switch with automatic visibility on phase-switching chargers
+- Zero-config mDNS discovery with HTTP API probing and periodic re-browse
+- "Identify" flashes the rear LED

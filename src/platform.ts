@@ -220,10 +220,11 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
       this.log.info('Restoring charger from cache: %s (%s:%d)', name, entry.host, port);
     } else {
       this.log.info('Adding charger: %s (%s:%d)%s', name, entry.host, port, discovered ? ' [discovered]' : '');
-      accessory = new this.api.platformAccessory(name, uuid);
+      accessory = new this.api.platformAccessory(name, uuid, this.api.hap.Categories.OUTLET);
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       this.cachedAccessories.push(accessory);
     }
+    accessory.category = this.api.hap.Categories.OUTLET;
     // Only discovered chargers persist context (host/port/name, no secrets);
     // manual entries always come from config.json.
     accessory.context.discovered = discovered;

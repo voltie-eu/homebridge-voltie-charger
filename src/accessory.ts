@@ -97,16 +97,33 @@ export class VoltieChargerAccessory {
     this.setupRebootSwitch();
     this.setupRearLed();
     // Linking the secondary services to the primary Outlet makes third-party
-    // HomeKit apps (Eve, Controller) render the charger as one grouped block.
-    for (const service of [
-      this.currentService, this.carSensorService, this.faultSensorService,
-      this.lockService, this.autostartService, this.singlePhaseService,
-      this.rebootService, this.rearLedService,
-    ]) {
+    // HomeKit apps (Eve, Controller) render the charger as one grouped block,
+    // and ConfiguredName labels the sub-tiles in single-tile view.
+    this.labelService(this.outletService, 'Charging');
+    const secondaries: Array<[Service | undefined, string]> = [
+      [this.currentService, 'Current'],
+      [this.carSensorService, 'Car Connected'],
+      [this.faultSensorService, 'Fault'],
+      [this.lockService, 'RFID Lock'],
+      [this.autostartService, 'Autostart'],
+      [this.singlePhaseService, 'Single Phase'],
+      [this.rebootService, 'Reboot'],
+      [this.rearLedService, 'Rear LED'],
+    ];
+    for (const [service, label] of secondaries) {
       if (service) {
         this.outletService.addLinkedService(service);
+        this.labelService(service, label);
       }
     }
+
+    // "Identify" during pairing flashes the rear LED; unmistakably the right
+    // charger, and harmless if the LED is disabled (the error is just logged).
+    this.accessory.on('identify', () => {
+      this.platform.log.info('[%s] Identify requested; flashing rear LED', this.entry.name);
+      void this.client.setRearLed(1, 'FFFFFF', 3)
+        .catch((error) => this.platform.log.debug('[%s] Identify LED flash failed: %s', this.entry.name, error));
+    });
 
     void this.poll();
     const timer = setInterval(() => void this.poll(), this.entry.pollInterval * 1000);
@@ -267,6 +284,7 @@ export class VoltieChargerAccessory {
       .onGet(() => this.guarded(() => this.config.conf_force_single_phase === 1))
       .onSet((value) => this.setForceSinglePhase(value === true));
     this.outletService.addLinkedService(this.singlePhaseService);
+    this.labelService(this.singlePhaseService, 'Single Phase');
   }
 
   private syncSinglePhaseVisibility(): void {
@@ -335,6 +353,16 @@ export class VoltieChargerAccessory {
         this.rearLed.saturation = value as number;
         this.sendRearLed();
       });
+  }
+
+  /** Set ConfiguredName once so single-tile sub-tiles get short labels while
+   * user renames from the Home app survive restarts. */
+  private labelService(service: Service, label: string): void {
+    const { ConfiguredName } = this.platform.Characteristic;
+    service.addOptionalCharacteristic(ConfiguredName);
+    if (!service.getCharacteristic(ConfiguredName).value) {
+      service.updateCharacteristic(ConfiguredName, label);
+    }
   }
 
   // ---- HomeKit -> charger ----
