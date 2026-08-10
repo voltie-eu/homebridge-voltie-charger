@@ -20,6 +20,8 @@ interface ResolvedEntry extends ChargerConfigEntry {
 }
 
 const REFRESH_AFTER_WRITE_MS = 1500;
+// rear_led_set effects expire on the charger; ask for the maximum (spec 4.10.2).
+const REAR_LED_DURATION_S = 3600;
 const BRIGHTNESS_DEBOUNCE_MS = 500;
 const FAILURES_BEFORE_UNREACHABLE = 2;
 
@@ -32,6 +34,9 @@ export class VoltieChargerAccessory {
   private faultSensorService?: Service;
   private lockService?: Service;
   private autostartService?: Service;
+  private singlePhaseService?: Service;
+  private rebootService?: Service;
+  private rearLedService?: Service;
 
   private status: ChargerStatus = {};
   private config: ChargerConfig = {};
@@ -44,6 +49,12 @@ export class VoltieChargerAccessory {
 
   private brightnessTimer?: NodeJS.Timeout;
   private refreshTimer?: NodeJS.Timeout;
+  private rearLedTimer?: NodeJS.Timeout;
+  private rebootResetTimer?: NodeJS.Timeout;
+
+  // The rear LED command is fire-and-forget on the charger (no readback), so
+  // the lamp state lives here, optimistically.
+  private rearLed = { on: false, hue: 25, saturation: 100, brightness: 100 };
 
   constructor(
     private readonly platform: VoltieChargerPlatform,
@@ -81,6 +92,9 @@ export class VoltieChargerAccessory {
     this.setupFaultSensor();
     this.setupAccessLock();
     this.setupAutostartSwitch();
+    this.setupSinglePhaseSwitch();
+    this.setupRebootSwitch();
+    this.setupRearLed();
 
     void this.poll();
     const timer = setInterval(() => void this.poll(), this.entry.pollInterval * 1000);
@@ -88,6 +102,8 @@ export class VoltieChargerAccessory {
       clearInterval(timer);
       clearTimeout(this.brightnessTimer);
       clearTimeout(this.refreshTimer);
+      clearTimeout(this.rearLedTimer);
+      clearTimeout(this.rebootResetTimer);
     });
   }
 
@@ -177,6 +193,75 @@ export class VoltieChargerAccessory {
       .onSet((value) => this.setAutostart(value === true));
   }
 
+  private setupSinglePhaseSwitch(): void {
+    const { Service: S, Characteristic: C } = this.platform;
+    const existing = this.accessory.getServiceById(S.Switch, 'single-phase');
+    if (this.entry.singlePhaseSwitch !== true) {
+      if (existing) {
+        this.accessory.removeService(existing);
+      }
+      return;
+    }
+    this.singlePhaseService = existing
+      ?? this.accessory.addService(S.Switch, `${this.entry.name} Single Phase`, 'single-phase');
+    this.singlePhaseService.getCharacteristic(C.On)
+      .onGet(() => this.guarded(() => this.config.conf_force_single_phase === 1))
+      .onSet((value) => this.setForceSinglePhase(value === true));
+  }
+
+  private setupRebootSwitch(): void {
+    const { Service: S, Characteristic: C } = this.platform;
+    const existing = this.accessory.getServiceById(S.Switch, 'reboot');
+    if (this.entry.rebootSwitch !== true) {
+      if (existing) {
+        this.accessory.removeService(existing);
+      }
+      return;
+    }
+    this.rebootService = existing
+      ?? this.accessory.addService(S.Switch, `${this.entry.name} Reboot`, 'reboot');
+    this.rebootService.getCharacteristic(C.On)
+      .onGet(() => false)
+      .onSet((value) => this.triggerReboot(value === true));
+  }
+
+  private setupRearLed(): void {
+    const { Service: S, Characteristic: C } = this.platform;
+    const existing = this.accessory.getServiceById(S.Lightbulb, 'rear-led');
+    if (this.entry.rearLedLight !== true) {
+      if (existing) {
+        this.accessory.removeService(existing);
+      }
+      return;
+    }
+    this.rearLedService = existing
+      ?? this.accessory.addService(S.Lightbulb, `${this.entry.name} Rear LED`, 'rear-led');
+    this.rearLedService.getCharacteristic(C.On)
+      .onGet(() => this.rearLed.on)
+      .onSet((value) => {
+        this.rearLed.on = value === true;
+        this.sendRearLed();
+      });
+    this.rearLedService.getCharacteristic(C.Brightness)
+      .onGet(() => this.rearLed.brightness)
+      .onSet((value) => {
+        this.rearLed.brightness = value as number;
+        this.sendRearLed();
+      });
+    this.rearLedService.getCharacteristic(C.Hue)
+      .onGet(() => this.rearLed.hue)
+      .onSet((value) => {
+        this.rearLed.hue = value as number;
+        this.sendRearLed();
+      });
+    this.rearLedService.getCharacteristic(C.Saturation)
+      .onGet(() => this.rearLed.saturation)
+      .onSet((value) => {
+        this.rearLed.saturation = value as number;
+        this.sendRearLed();
+      });
+  }
+
   // ---- HomeKit -> charger ----
 
   private async setCharging(on: boolean): Promise<void> {
@@ -245,6 +330,54 @@ export class VoltieChargerAccessory {
     } finally {
       this.scheduleRefresh();
     }
+  }
+
+  private async setForceSinglePhase(enabled: boolean): Promise<void> {
+    try {
+      await this.client.setConfig({ conf_force_single_phase: enabled ? 1 : 0 });
+      this.stateGeneration += 1;
+      this.config.conf_force_single_phase = enabled ? 1 : 0;
+    } catch (error) {
+      this.platform.log.error('[%s] Failed to set single-phase mode: %s', this.entry.name, error);
+      throw this.communicationError();
+    } finally {
+      this.scheduleRefresh();
+    }
+  }
+
+  private async triggerReboot(on: boolean): Promise<void> {
+    if (!on) {
+      return;
+    }
+    // Momentary switch: flip back off shortly after triggering.
+    clearTimeout(this.rebootResetTimer);
+    this.rebootResetTimer = setTimeout(() => {
+      this.rebootService?.updateCharacteristic(this.platform.Characteristic.On, false);
+    }, 1000);
+    try {
+      await this.client.reboot();
+      this.platform.log.warn('[%s] Charger reboot requested from HomeKit', this.entry.name);
+    } catch (error) {
+      this.platform.log.error('[%s] Failed to reboot charger: %s', this.entry.name, error);
+      throw this.communicationError();
+    }
+  }
+
+  private sendRearLed(): void {
+    // HomeKit sets On/Brightness/Hue/Saturation as separate writes in quick
+    // succession; coalesce them into one command.
+    clearTimeout(this.rearLedTimer);
+    this.rearLedTimer = setTimeout(() => {
+      const { on, hue, saturation, brightness } = this.rearLed;
+      const color = hsvToRgbHex(hue, saturation);
+      void this.client
+        .setRearLed(on ? brightness / 100 : 0, color, REAR_LED_DURATION_S)
+        .then(() => this.platform.log.debug(
+          '[%s] Rear LED set: on=%s color=%s brightness=%d%%',
+          this.entry.name, on, color, brightness,
+        ))
+        .catch((error) => this.platform.log.error('[%s] Failed to set rear LED: %s', this.entry.name, error));
+    }, BRIGHTNESS_DEBOUNCE_MS);
   }
 
   // ---- polling ----
@@ -319,6 +452,7 @@ export class VoltieChargerAccessory {
     this.lockService?.updateCharacteristic(C.LockCurrentState, this.lockStateValue());
     this.lockService?.updateCharacteristic(C.LockTargetState, this.lockStateValue());
     this.autostartService?.updateCharacteristic(C.On, this.config.conf_autostart_enabled === 1);
+    this.singlePhaseService?.updateCharacteristic(C.On, this.config.conf_force_single_phase === 1);
 
     this.populateAccessoryInfo();
   }
@@ -401,6 +535,32 @@ export class VoltieChargerAccessory {
       this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,
     );
   }
+}
+
+function hsvToRgbHex(hue: number, saturation: number): string {
+  const h = ((hue % 360) + 360) % 360;
+  const s = Math.min(100, Math.max(0, saturation)) / 100;
+  const c = s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = 1 - c;
+  let rgb: [number, number, number];
+  if (h < 60) {
+    rgb = [c, x, 0];
+  } else if (h < 120) {
+    rgb = [x, c, 0];
+  } else if (h < 180) {
+    rgb = [0, c, x];
+  } else if (h < 240) {
+    rgb = [0, x, c];
+  } else if (h < 300) {
+    rgb = [x, 0, c];
+  } else {
+    rgb = [c, 0, x];
+  }
+  return rgb
+    .map((v) => Math.round((v + m) * 255).toString(16).padStart(2, '0'))
+    .join('')
+    .toUpperCase();
 }
 
 /** Decode the decimal-packed software version (e.g. 1003042 -> '1.3.42'). */

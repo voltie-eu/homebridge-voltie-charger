@@ -42,7 +42,9 @@
             "password": {
               "title": "Password",
               "type": "string",
-              "x-schema-form": { "type": "password" }
+              "x-schema-form": {
+                "type": "password"
+              }
             },
             "pollInterval": {
               "title": "Poll interval (seconds)",
@@ -82,6 +84,24 @@
               "title": "Autostart switch",
               "type": "boolean",
               "default": false
+            },
+            "singlePhaseSwitch": {
+              "title": "Single-phase charging switch",
+              "type": "boolean",
+              "default": false,
+              "description": "Forces 1-phase charging (useful for solar surplus). Only on chargers that support phase switching."
+            },
+            "rebootSwitch": {
+              "title": "Reboot switch",
+              "type": "boolean",
+              "default": false,
+              "description": "Momentary switch that reboots the charger. Keep disabled unless you need it."
+            },
+            "rearLedLight": {
+              "title": "Rear LED light (color Lightbulb)",
+              "type": "boolean",
+              "default": false,
+              "description": "Exposes the charger's rear LED strip as a color lamp. The effect expires after an hour (firmware limit)."
             }
           }
         }

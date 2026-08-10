@@ -37,6 +37,9 @@ export interface ChargerConfigEntry {
   faultSensor?: boolean;
   accessLock?: boolean;
   autostartSwitch?: boolean;
+  singlePhaseSwitch?: boolean;
+  rebootSwitch?: boolean;
+  rearLedLight?: boolean;
 }
 
 /** What a discovered charger persists in the accessory context: no secrets. */

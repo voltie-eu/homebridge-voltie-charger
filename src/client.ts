@@ -39,6 +39,7 @@ export interface ChargerConfig {
   conf_current_limit?: number;
   conf_autostart_enabled?: number;
   conf_access_mode?: number;
+  conf_force_single_phase?: number;
   [key: string]: unknown;
 }
 
@@ -160,6 +161,28 @@ export class VoltieClient {
         `Charger accepted only ${accepted}/${Object.keys(values).length} config parameters`,
       );
     }
+  }
+
+  private async command(command: string, params?: Record<string, unknown>): Promise<void> {
+    const body: Record<string, unknown> = { command };
+    if (params) {
+      body['params'] = params;
+    }
+    await this.request('POST', 'extras', { body });
+  }
+
+  async reboot(): Promise<void> {
+    await this.command('charger_reboot');
+  }
+
+  /** brightness 0..1, colorRgb "RRGGBB"; the effect expires after durationSec. */
+  async setRearLed(brightness: number, colorRgb: string, durationSec: number): Promise<void> {
+    await this.command('rear_led_set', {
+      brightness,
+      // The firmware requires the '#RRGGBB' form (spec 4.10.2).
+      color_rgb: `#${colorRgb.replace(/^#/, '').toUpperCase()}`,
+      duration_sec: durationSec,
+    });
   }
 
   async start(name: string, idTag?: string): Promise<void> {
