@@ -1,7 +1,7 @@
 {
   "name": "homebridge-voltie-charger",
   "displayName": "Voltie Charger",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Homebridge plugin for Voltie EV chargers using the charger's local HTTP API (v5.x).",
   "license": "MIT",
   "repository": {

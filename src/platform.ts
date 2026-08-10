@@ -11,7 +11,7 @@ import type {
 } from 'homebridge';
 
 import { VoltieChargerAccessory } from './accessory';
-import { VoltieApiError, VoltieClient } from './client';
+import { errorText, VoltieApiError, VoltieClient } from './client';
 import { discoverChargers } from './discovery';
 import { buildEveCharacteristics, EveCharacteristics } from './eve';
 import {
@@ -70,7 +70,7 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
     this.eve = buildEveCharacteristics(api);
 
     api.on('didFinishLaunching', () => {
-      this.setupChargers().catch((error) => this.log.error('Charger setup failed: %s', error));
+      this.setupChargers().catch((error) => this.log.error('Charger setup failed: %s', errorText(error)));
     });
   }
 
@@ -158,10 +158,10 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
     try {
       found = await discoverChargers(
         DISCOVERY_TIMEOUT_MS,
-        (error) => this.log.warn('mDNS error during discovery: %s', error),
+        (error) => this.log.warn('mDNS error during discovery: %s', errorText(error)),
       );
     } catch (error) {
-      this.log.warn('mDNS discovery failed: %s', error);
+      this.log.warn('mDNS discovery failed: %s', errorText(error));
       return;
     }
     logLine('Discovery finished: %d charger(s) found', found.length);

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5
+
+- Rear LED lamp On/Off now maps to the charger's persistent LED-enable setting with real readback; turning it off also cancels any active colour override (which used to keep glowing for up to an hour). Colour and brightness still use the temporary override, and the last set colour survives restarts
+- Autostart switch writes are accepted by current firmware again (it validates the value as a JSON boolean on write while reporting 0/1 on read); an automatic fallback covers older firmware
+- User-facing log lines show a one-line reason instead of a stack trace; full details remain at debug level
+- Assorted state-consistency fixes around the rear LED from the pre-release review
+
 ## 0.1.4
 
 - New: **Charge Complete** contact sensor (default on) — opens when the car finishes charging on its own while still plugged in; a deliberate stop does not trigger it. Ideal for a "car is charged" notification

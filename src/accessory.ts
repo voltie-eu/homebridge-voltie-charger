@@ -7,6 +7,7 @@ import {
   isCharging,
   isFault,
   isSwitchedOn,
+  errorText,
   VoltieApiError,
   VoltieClient,
 } from './client';
@@ -61,7 +62,8 @@ export class VoltieChargerAccessory {
   private rebootResetTimer?: NodeJS.Timeout;
 
   // The rear LED command is fire-and-forget on the charger (no readback), so
-  // the lamp state lives here, optimistically.
+  // the lamp state lives here optimistically, persisted to the accessory
+  // context so a restart does not forget the last set colour.
   private rearLed = { on: false, hue: 25, saturation: 100, brightness: 100 };
 
   constructor(
@@ -70,6 +72,9 @@ export class VoltieChargerAccessory {
     private readonly entry: ResolvedEntry,
   ) {
     this.client = new VoltieClient(entry.host!, entry.port, entry.username, entry.password);
+    if (this.accessory.context.rearLed) {
+      this.rearLed = { ...this.rearLed, ...this.accessory.context.rearLed };
+    }
 
     const { Service: S, Characteristic: C } = this.platform;
 
@@ -246,7 +251,7 @@ export class VoltieChargerAccessory {
     this.autostartService = existing
       ?? this.accessory.addService(S.Switch, `${this.entry.name} Autostart`, 'autostart');
     this.autostartService.getCharacteristic(C.On)
-      .onGet(() => this.guarded(() => this.config.conf_autostart_enabled === 1))
+      .onGet(() => this.guarded(() => this.autostartOn()))
       .onSet((value) => this.setAutostart(value === true));
   }
 
@@ -357,11 +362,8 @@ export class VoltieChargerAccessory {
     this.rearLedService = existing
       ?? this.accessory.addService(S.Lightbulb, `${this.entry.name} Rear LED`, 'rear-led');
     this.rearLedService.getCharacteristic(C.On)
-      .onGet(() => this.rearLed.on)
-      .onSet((value) => {
-        this.rearLed.on = value === true;
-        this.sendRearLed();
-      });
+      .onGet(() => this.guarded(() => this.rearLedOn()))
+      .onSet((value) => this.setRearLedEnabled(value === true));
     this.rearLedService.getCharacteristic(C.Brightness)
       .onGet(() => this.rearLed.brightness)
       .onSet((value) => {
@@ -411,7 +413,7 @@ export class VoltieChargerAccessory {
       }
       this.platform.log.info('[%s] %s charging', this.entry.name, on ? 'Started' : 'Stopped');
     } catch (error) {
-      this.platform.log.error('[%s] Failed to %s charging: %s', this.entry.name, on ? 'start' : 'stop', error);
+      this.platform.log.error('[%s] Failed to %s charging: %s', this.entry.name, on ? 'start' : 'stop', errorText(error));
       throw this.communicationError();
     } finally {
       this.scheduleRefresh();
@@ -431,7 +433,7 @@ export class VoltieChargerAccessory {
           this.config.conf_current_limit = amps;
           this.platform.log.info('[%s] Current limit set to %d A', this.entry.name, amps);
         } catch (error) {
-          this.platform.log.error('[%s] Failed to set current limit: %s', this.entry.name, error);
+          this.platform.log.error('[%s] Failed to set current limit: %s', this.entry.name, errorText(error));
         } finally {
           this.scheduleRefresh();
         }
@@ -449,7 +451,7 @@ export class VoltieChargerAccessory {
         this.lockStateValue(),
       );
     } catch (error) {
-      this.platform.log.error('[%s] Failed to set access mode: %s', this.entry.name, error);
+      this.platform.log.error('[%s] Failed to set access mode: %s', this.entry.name, errorText(error));
       throw this.communicationError();
     } finally {
       this.scheduleRefresh();
@@ -459,10 +461,21 @@ export class VoltieChargerAccessory {
   private async setAutostart(enabled: boolean): Promise<void> {
     try {
       this.stateGeneration += 1;
-      await this.client.setConfig({ conf_autostart_enabled: enabled ? 1 : 0 });
+      // Current firmware validates this key as a JSON boolean on write while
+      // still reporting 0/1 on read (verified live); ancient firmware wanted
+      // 0/1, so fall back to that on a rejected write.
+      try {
+        await this.client.setConfig({ conf_autostart_enabled: enabled });
+      } catch (error) {
+        if (error instanceof VoltieApiError) {
+          await this.client.setConfig({ conf_autostart_enabled: enabled ? 1 : 0 });
+        } else {
+          throw error;
+        }
+      }
       this.config.conf_autostart_enabled = enabled ? 1 : 0;
     } catch (error) {
-      this.platform.log.error('[%s] Failed to set autostart: %s', this.entry.name, error);
+      this.platform.log.error('[%s] Failed to set autostart: %s', this.entry.name, errorText(error));
       throw this.communicationError();
     } finally {
       this.scheduleRefresh();
@@ -475,7 +488,7 @@ export class VoltieChargerAccessory {
       await this.client.setConfig({ conf_force_single_phase: enabled ? 1 : 0 });
       this.config.conf_force_single_phase = enabled ? 1 : 0;
     } catch (error) {
-      this.platform.log.error('[%s] Failed to set single-phase mode: %s', this.entry.name, error);
+      this.platform.log.error('[%s] Failed to set single-phase mode: %s', this.entry.name, errorText(error));
       throw this.communicationError();
     } finally {
       this.scheduleRefresh();
@@ -490,7 +503,7 @@ export class VoltieChargerAccessory {
       await this.client.reboot();
       this.platform.log.warn('[%s] Charger reboot requested from HomeKit', this.entry.name);
     } catch (error) {
-      this.platform.log.error('[%s] Failed to reboot charger: %s', this.entry.name, error);
+      this.platform.log.error('[%s] Failed to reboot charger: %s', this.entry.name, errorText(error));
       throw this.communicationError();
     } finally {
       // Momentary switch: flip back off after the request settled, so a slow
@@ -502,23 +515,71 @@ export class VoltieChargerAccessory {
     }
   }
 
+  /** The lamp's On state is the charger's persistent LED-enable flag; older
+   * firmwares without the field fall back to the optimistic local state. */
+  private rearLedOn(): boolean {
+    const enabled = this.config.conf_rear_led_enabled;
+    return typeof enabled === 'boolean' ? enabled : this.rearLed.on;
+  }
+
+  private async setRearLedEnabled(on: boolean): Promise<void> {
+    this.rearLed.on = on;
+    if (!on) {
+      clearTimeout(this.rearLedTimer);
+      clearTimeout(this.rearLedKeepAliveTimer);
+    }
+    if (typeof this.config.conf_rear_led_enabled !== 'boolean') {
+      // Older firmware: keep the transient-override behaviour.
+      this.sendRearLed();
+      return;
+    }
+    try {
+      this.stateGeneration += 1;
+      await this.client.setConfig({ conf_rear_led_enabled: on });
+      this.config.conf_rear_led_enabled = on;
+      if (!on) {
+        // An active colour override outranks the disable flag in the firmware
+        // (it would keep glowing for up to an hour); cancel it explicitly.
+        await this.client.setRearLed(0, '000000', 1).catch(() => undefined);
+      }
+      this.accessory.context.rearLed = { ...this.rearLed };
+      this.platform.log.info('[%s] Rear LED %s', this.entry.name, on ? 'enabled' : 'disabled');
+    } catch (error) {
+      this.rearLed.on = !on;
+      this.platform.log.error('[%s] Failed to %s rear LED: %s', this.entry.name, on ? 'enable' : 'disable', errorText(error));
+      throw this.communicationError();
+    } finally {
+      this.scheduleRefresh();
+    }
+  }
+
   private sendRearLed(): void {
     // HomeKit sets On/Brightness/Hue/Saturation as separate writes in quick
     // succession; coalesce them into one command.
     clearTimeout(this.rearLedTimer);
     this.rearLedTimer = setTimeout(() => {
-      const { on, hue, saturation, brightness } = this.rearLed;
+      const on = this.rearLedOn();
+      this.rearLed.on = on;
+      const { hue, saturation, brightness } = this.rearLed;
+      this.accessory.context.rearLed = { ...this.rearLed };
       const color = hsvToRgbHex(hue, saturation);
-      void this.client
-        .setRearLed(on ? Math.max(1, brightness) / 100 : 0, color, REAR_LED_DURATION_S)
+      const ensureEnabled = on && this.config.conf_rear_led_enabled === false
+        ? this.client.setConfig({ conf_rear_led_enabled: true }).then(() => {
+          this.stateGeneration += 1;
+          this.config.conf_rear_led_enabled = true;
+        })
+        : Promise.resolve();
+      void ensureEnabled
+        .then(() => this.client.setRearLed(on ? Math.max(1, brightness) / 100 : 0, color, REAR_LED_DURATION_S))
         .then(() => this.platform.log.debug(
           '[%s] Rear LED set: on=%s color=%s brightness=%d%%',
           this.entry.name, on, color, brightness,
         ))
         .catch((error) => {
-          this.platform.log.error('[%s] Failed to set rear LED: %s', this.entry.name, error);
-          if (this.rearLed.on) {
-            // Roll the tile back so a rejected command isn't shown as lit.
+          this.platform.log.error('[%s] Failed to set rear LED: %s', this.entry.name, errorText(error));
+          // Only the old-firmware fallback owns the On state locally; with the
+          // enabled flag the next poll shows the truth anyway.
+          if (typeof this.config.conf_rear_led_enabled !== 'boolean' && this.rearLed.on) {
             this.rearLed.on = false;
             this.rearLedService?.updateCharacteristic(this.platform.Characteristic.On, false);
           }
@@ -581,7 +642,8 @@ export class VoltieChargerAccessory {
             this.entry.name, error.message,
           );
         } else {
-          this.platform.log.warn('[%s] Charger unreachable: %s', this.entry.name, error);
+          this.platform.log.warn('[%s] Charger unreachable: %s', this.entry.name, errorText(error));
+          this.platform.log.debug('[%s] Unreachable detail: %s', this.entry.name, error instanceof Error ? error.stack : error);
         }
       }
     }
@@ -621,11 +683,13 @@ export class VoltieChargerAccessory {
     this.chargeCompleteService?.updateCharacteristic(C.ContactSensorState, this.chargeCompleteValue());
     this.lockService?.updateCharacteristic(C.LockCurrentState, this.lockStateValue());
     this.lockService?.updateCharacteristic(C.LockTargetState, this.lockStateValue());
-    this.autostartService?.updateCharacteristic(C.On, this.config.conf_autostart_enabled === 1);
+    this.autostartService?.updateCharacteristic(C.On, this.autostartOn());
+    this.rearLed.on = this.rearLedOn();
+    this.rearLedService?.updateCharacteristic(C.On, this.rearLed.on);
     try {
       this.syncSinglePhaseVisibility();
     } catch (error) {
-      this.platform.log.error('[%s] Failed to update Single Phase switch visibility: %s', this.entry.name, error);
+      this.platform.log.error('[%s] Failed to update Single Phase switch visibility: %s', this.entry.name, errorText(error));
     }
     this.singlePhaseService?.updateCharacteristic(C.On, this.config.conf_force_single_phase === 1);
 
@@ -690,6 +754,11 @@ export class VoltieChargerAccessory {
     return isFault(this.status)
       ? ContactSensorState.CONTACT_NOT_DETECTED
       : ContactSensorState.CONTACT_DETECTED;
+  }
+
+  private autostartOn(): boolean {
+    const v = this.config.conf_autostart_enabled as unknown;
+    return v === 1 || v === true;
   }
 
   private lockStateValue(): number {

@@ -36,6 +36,7 @@ export interface ChargerStatus {
 }
 
 export interface ChargerConfig {
+  conf_rear_led_enabled?: boolean;
   conf_current_limit?: number;
   conf_autostart_enabled?: number;
   conf_access_mode?: number;
@@ -50,6 +51,11 @@ const API_ERROR_MESSAGES: Record<number, string> = {
   23: 'not master: send the command to the cluster master unit instead',
   24: 'unknown command (not supported by this firmware)',
 };
+
+/** One-line, human-readable error text for user-facing logs (no stack). */
+export function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 export class VoltieApiError extends Error {
   constructor(message: string, readonly code?: number) {
