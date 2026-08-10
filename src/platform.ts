@@ -22,6 +22,7 @@ import {
   MIN_POLL_INTERVAL_S,
   PLATFORM_NAME,
   PLUGIN_NAME,
+  REDISCOVERY_INTERVAL_MS,
 } from './settings';
 
 export interface ChargerConfigEntry {
@@ -56,6 +57,7 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
   readonly eve: EveCharacteristics;
 
   private readonly cachedAccessories: PlatformAccessory[] = [];
+  private readonly handled = new Set<string>();
 
   constructor(
     readonly log: Logging,
@@ -79,7 +81,7 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
     const entries = Array.isArray(this.config.chargers)
       ? (this.config.chargers as ChargerConfigEntry[])
       : [];
-    const handled = new Set<string>();
+    const handled = this.handled;
 
     for (const entry of entries) {
       if (!entry.host) {
@@ -126,13 +128,24 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
       this.log.info('Removing %d charger(s) no longer present in config or on the network', stale.length);
       this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
     }
+
+    // Chargers added to the network later show up without a restart.
+    if (this.config.discovery !== false) {
+      const timer = setInterval(() => {
+        this.discoverAndStart(coveredByManual, handled, true)
+          .catch((error) => this.log.debug('Periodic discovery failed: %s', error));
+      }, REDISCOVERY_INTERVAL_MS);
+      this.api.on('shutdown', () => clearInterval(timer));
+    }
   }
 
   private async discoverAndStart(
     coveredByManual: (address: string, shortId: string) => boolean,
     handled: Set<string>,
+    quiet = false,
   ): Promise<void> {
-    this.log.info('Browsing for Voltie chargers via mDNS (%d s)...', DISCOVERY_TIMEOUT_MS / 1000);
+    const logLine = quiet ? this.log.debug.bind(this.log) : this.log.info.bind(this.log);
+    logLine('Browsing for Voltie chargers via mDNS (%d s)...', DISCOVERY_TIMEOUT_MS / 1000);
     let found;
     try {
       found = await discoverChargers(
@@ -143,10 +156,16 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
       this.log.warn('mDNS discovery failed: %s', error);
       return;
     }
-    this.log.info('Discovery finished: %d charger(s) found', found.length);
+    logLine('Discovery finished: %d charger(s) found', found.length);
 
     await Promise.all(found.map(async (charger) => {
       if (coveredByManual(charger.address, charger.shortId)) {
+        return;
+      }
+      const knownUuid = this.api.hap.uuid.generate(`voltie-discovered:${charger.shortId}`);
+      if (handled.has(knownUuid)) {
+        // Already running from this launch; a re-browse must not spawn a
+        // second handler for the same charger.
         return;
       }
       // Only chargers with a working HTTP API become accessories; a charger

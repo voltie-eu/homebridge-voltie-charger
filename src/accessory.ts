@@ -10,7 +10,7 @@ import {
   VoltieClient,
 } from './client';
 import type { ChargerConfigEntry, VoltieChargerPlatform } from './platform';
-import { CURRENT_LIMIT_FALLBACK_MAX_A, CURRENT_LIMIT_MIN_A, START_NAME } from './settings';
+import { CURRENT_LIMIT_FALLBACK_MAX_A, CURRENT_LIMIT_MIN_A, REAR_LED_KEEPALIVE_MS, START_NAME } from './settings';
 
 interface ResolvedEntry extends ChargerConfigEntry {
   name: string;
@@ -50,6 +50,7 @@ export class VoltieChargerAccessory {
   private brightnessTimer?: NodeJS.Timeout;
   private refreshTimer?: NodeJS.Timeout;
   private rearLedTimer?: NodeJS.Timeout;
+  private rearLedKeepAliveTimer?: NodeJS.Timeout;
   private rebootResetTimer?: NodeJS.Timeout;
 
   // The rear LED command is fire-and-forget on the charger (no readback), so
@@ -103,6 +104,7 @@ export class VoltieChargerAccessory {
       clearTimeout(this.brightnessTimer);
       clearTimeout(this.refreshTimer);
       clearTimeout(this.rearLedTimer);
+      clearTimeout(this.rearLedKeepAliveTimer);
       clearTimeout(this.rebootResetTimer);
     });
   }
@@ -208,14 +210,23 @@ export class VoltieChargerAccessory {
     return 'auto';
   }
 
-  private singlePhaseSupported(): boolean {
-    const conf = this.config.conf_force_single_phase;
-    if (conf !== 0 && conf !== 1) {
-      // 2 = not supported by hardware, 3/undefined = unknown (spec 4.7)
-      return false;
-    }
+  private singlePhaseSupported(): 'yes' | 'no' | 'unknown' {
     // Forcing single phase is meaningless on a single-phase installation.
-    return typeof this.status.phases !== 'number' || this.status.phases >= 3;
+    if (typeof this.status.phases === 'number' && this.status.phases < 3) {
+      return 'no';
+    }
+    const conf = this.config.conf_force_single_phase;
+    if (conf === 0 || conf === 1) {
+      return 'yes';
+    }
+    if (conf === 2) {
+      return 'no';
+    }
+    // 3 = transient "unknown" (e.g. right after charger boot) and a missing
+    // field both mean "don't know yet"; visibility must not flap on it,
+    // because every remove/add cycle silently breaks HomeKit automations
+    // that reference the switch.
+    return 'unknown';
   }
 
   private setupSinglePhaseSwitch(): void {
@@ -250,12 +261,11 @@ export class VoltieChargerAccessory {
     if (this.singlePhaseMode() !== 'auto') {
       return;
     }
-    if (this.singlePhaseSupported()) {
-      if (!this.singlePhaseService) {
-        this.platform.log.info('[%s] Phase switching supported; adding Single Phase switch', this.entry.name);
-        this.attachSinglePhaseService();
-      }
-    } else if (this.singlePhaseService) {
+    const supported = this.singlePhaseSupported();
+    if (supported === 'yes' && !this.singlePhaseService) {
+      this.platform.log.info('[%s] Phase switching supported; adding Single Phase switch', this.entry.name);
+      this.attachSinglePhaseService();
+    } else if (supported === 'no' && this.singlePhaseService) {
       this.platform.log.info('[%s] Phase switching not supported; removing Single Phase switch', this.entry.name);
       this.accessory.removeService(this.singlePhaseService);
       this.singlePhaseService = undefined;
@@ -319,12 +329,12 @@ export class VoltieChargerAccessory {
 
   private async setCharging(on: boolean): Promise<void> {
     try {
+      this.stateGeneration += 1;
       if (on) {
         await this.client.start(START_NAME, this.entry.idTag);
       } else {
         await this.client.stop();
       }
-      this.stateGeneration += 1;
       this.platform.log.info('[%s] %s charging', this.entry.name, on ? 'Started' : 'Stopped');
     } catch (error) {
       this.platform.log.error('[%s] Failed to %s charging: %s', this.entry.name, on ? 'start' : 'stop', error);
@@ -342,8 +352,8 @@ export class VoltieChargerAccessory {
     this.brightnessTimer = setTimeout(() => {
       void (async () => {
         try {
-          await this.client.setConfig({ conf_current_limit: amps });
           this.stateGeneration += 1;
+          await this.client.setConfig({ conf_current_limit: amps });
           this.config.conf_current_limit = amps;
           this.platform.log.info('[%s] Current limit set to %d A', this.entry.name, amps);
         } catch (error) {
@@ -357,8 +367,8 @@ export class VoltieChargerAccessory {
 
   private async setAccessMode(rfidRequired: boolean): Promise<void> {
     try {
-      await this.client.setConfig({ conf_access_mode: rfidRequired ? 1 : 0 });
       this.stateGeneration += 1;
+      await this.client.setConfig({ conf_access_mode: rfidRequired ? 1 : 0 });
       this.config.conf_access_mode = rfidRequired ? 1 : 0;
       this.lockService?.updateCharacteristic(
         this.platform.Characteristic.LockCurrentState,
@@ -374,8 +384,8 @@ export class VoltieChargerAccessory {
 
   private async setAutostart(enabled: boolean): Promise<void> {
     try {
-      await this.client.setConfig({ conf_autostart_enabled: enabled ? 1 : 0 });
       this.stateGeneration += 1;
+      await this.client.setConfig({ conf_autostart_enabled: enabled ? 1 : 0 });
       this.config.conf_autostart_enabled = enabled ? 1 : 0;
     } catch (error) {
       this.platform.log.error('[%s] Failed to set autostart: %s', this.entry.name, error);
@@ -387,8 +397,8 @@ export class VoltieChargerAccessory {
 
   private async setForceSinglePhase(enabled: boolean): Promise<void> {
     try {
-      await this.client.setConfig({ conf_force_single_phase: enabled ? 1 : 0 });
       this.stateGeneration += 1;
+      await this.client.setConfig({ conf_force_single_phase: enabled ? 1 : 0 });
       this.config.conf_force_single_phase = enabled ? 1 : 0;
     } catch (error) {
       this.platform.log.error('[%s] Failed to set single-phase mode: %s', this.entry.name, error);
@@ -402,17 +412,19 @@ export class VoltieChargerAccessory {
     if (!on) {
       return;
     }
-    // Momentary switch: flip back off shortly after triggering.
-    clearTimeout(this.rebootResetTimer);
-    this.rebootResetTimer = setTimeout(() => {
-      this.rebootService?.updateCharacteristic(this.platform.Characteristic.On, false);
-    }, 1000);
     try {
       await this.client.reboot();
       this.platform.log.warn('[%s] Charger reboot requested from HomeKit', this.entry.name);
     } catch (error) {
       this.platform.log.error('[%s] Failed to reboot charger: %s', this.entry.name, error);
       throw this.communicationError();
+    } finally {
+      // Momentary switch: flip back off after the request settled, so a slow
+      // (>1 s) but successful POST can't leave the tile stuck on.
+      clearTimeout(this.rebootResetTimer);
+      this.rebootResetTimer = setTimeout(() => {
+        this.rebootService?.updateCharacteristic(this.platform.Characteristic.On, false);
+      }, 1000);
     }
   }
 
@@ -424,12 +436,27 @@ export class VoltieChargerAccessory {
       const { on, hue, saturation, brightness } = this.rearLed;
       const color = hsvToRgbHex(hue, saturation);
       void this.client
-        .setRearLed(on ? brightness / 100 : 0, color, REAR_LED_DURATION_S)
+        .setRearLed(on ? Math.max(1, brightness) / 100 : 0, color, REAR_LED_DURATION_S)
         .then(() => this.platform.log.debug(
           '[%s] Rear LED set: on=%s color=%s brightness=%d%%',
           this.entry.name, on, color, brightness,
         ))
-        .catch((error) => this.platform.log.error('[%s] Failed to set rear LED: %s', this.entry.name, error));
+        .catch((error) => {
+          this.platform.log.error('[%s] Failed to set rear LED: %s', this.entry.name, error);
+          if (this.rearLed.on) {
+            // Roll the tile back so a rejected command isn't shown as lit.
+            this.rearLed.on = false;
+            this.rearLedService?.updateCharacteristic(this.platform.Characteristic.On, false);
+          }
+        })
+        .finally(() => {
+          // The firmware expires the effect after an hour; while the lamp is
+          // on, refresh it (also retries after a failed send).
+          clearTimeout(this.rearLedKeepAliveTimer);
+          if (this.rearLed.on) {
+            this.rearLedKeepAliveTimer = setTimeout(() => this.sendRearLed(), REAR_LED_KEEPALIVE_MS);
+          }
+        });
     }, BRIGHTNESS_DEBOUNCE_MS);
   }
 
@@ -505,7 +532,11 @@ export class VoltieChargerAccessory {
     this.lockService?.updateCharacteristic(C.LockCurrentState, this.lockStateValue());
     this.lockService?.updateCharacteristic(C.LockTargetState, this.lockStateValue());
     this.autostartService?.updateCharacteristic(C.On, this.config.conf_autostart_enabled === 1);
-    this.syncSinglePhaseVisibility();
+    try {
+      this.syncSinglePhaseVisibility();
+    } catch (error) {
+      this.platform.log.error('[%s] Failed to update Single Phase switch visibility: %s', this.entry.name, error);
+    }
     this.singlePhaseService?.updateCharacteristic(C.On, this.config.conf_force_single_phase === 1);
 
     this.populateAccessoryInfo();
