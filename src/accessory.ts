@@ -6,6 +6,7 @@ import {
   isCarConnected,
   isFault,
   isSwitchedOn,
+  VoltieApiError,
   VoltieClient,
 } from './client';
 import type { ChargerConfigEntry, VoltieChargerPlatform } from './platform';
@@ -36,6 +37,10 @@ export class VoltieChargerAccessory {
   private config: ChargerConfig = {};
   private consecutiveFailures = 0;
   private infoPopulated = false;
+  // Bumped on every optimistic write and every poll start, so a poll response
+  // that raced with a newer write (or a newer poll) is discarded instead of
+  // snapping HomeKit back to stale values.
+  private stateGeneration = 0;
 
   private brightnessTimer?: NodeJS.Timeout;
   private refreshTimer?: NodeJS.Timeout;
@@ -181,6 +186,7 @@ export class VoltieChargerAccessory {
       } else {
         await this.client.stop();
       }
+      this.stateGeneration += 1;
       this.platform.log.info('[%s] %s charging', this.entry.name, on ? 'Started' : 'Stopped');
     } catch (error) {
       this.platform.log.error('[%s] Failed to %s charging: %s', this.entry.name, on ? 'start' : 'stop', error);
@@ -199,6 +205,7 @@ export class VoltieChargerAccessory {
       void (async () => {
         try {
           await this.client.setConfig({ conf_current_limit: amps });
+          this.stateGeneration += 1;
           this.config.conf_current_limit = amps;
           this.platform.log.info('[%s] Current limit set to %d A', this.entry.name, amps);
         } catch (error) {
@@ -213,6 +220,7 @@ export class VoltieChargerAccessory {
   private async setAccessMode(rfidRequired: boolean): Promise<void> {
     try {
       await this.client.setConfig({ conf_access_mode: rfidRequired ? 1 : 0 });
+      this.stateGeneration += 1;
       this.config.conf_access_mode = rfidRequired ? 1 : 0;
       this.lockService?.updateCharacteristic(
         this.platform.Characteristic.LockCurrentState,
@@ -229,6 +237,7 @@ export class VoltieChargerAccessory {
   private async setAutostart(enabled: boolean): Promise<void> {
     try {
       await this.client.setConfig({ conf_autostart_enabled: enabled ? 1 : 0 });
+      this.stateGeneration += 1;
       this.config.conf_autostart_enabled = enabled ? 1 : 0;
     } catch (error) {
       this.platform.log.error('[%s] Failed to set autostart: %s', this.entry.name, error);
@@ -246,22 +255,33 @@ export class VoltieChargerAccessory {
   }
 
   private async poll(): Promise<void> {
+    const generation = ++this.stateGeneration;
     try {
       const [status, config] = await Promise.all([
         this.client.getStatus(),
         this.client.getConfig(),
       ]);
-      this.status = status;
-      this.config = config;
       if (this.consecutiveFailures >= FAILURES_BEFORE_UNREACHABLE) {
         this.platform.log.info('[%s] Charger is reachable again', this.entry.name);
       }
       this.consecutiveFailures = 0;
+      if (generation !== this.stateGeneration) {
+        return;
+      }
+      this.status = status;
+      this.config = config;
       this.pushState();
     } catch (error) {
       this.consecutiveFailures += 1;
       if (this.consecutiveFailures === FAILURES_BEFORE_UNREACHABLE) {
-        this.platform.log.warn('[%s] Charger unreachable: %s', this.entry.name, error);
+        if (error instanceof VoltieApiError && error.code === 24) {
+          this.platform.log.warn(
+            '[%s] Charger firmware is too old for this plugin (HTTP API endpoint missing): %s',
+            this.entry.name, error.message,
+          );
+        } else {
+          this.platform.log.warn('[%s] Charger unreachable: %s', this.entry.name, error);
+        }
       }
     }
   }
@@ -308,10 +328,11 @@ export class VoltieChargerAccessory {
       return;
     }
     const { Service: S, Characteristic: C } = this.platform;
-    const info = this.accessory.getService(S.AccessoryInformation)!;
-    if (typeof this.status.charger_id === 'string' && this.status.charger_id) {
-      info.updateCharacteristic(C.SerialNumber, this.status.charger_id);
+    if (typeof this.status.charger_id !== 'string' || !this.status.charger_id) {
+      return;
     }
+    const info = this.accessory.getService(S.AccessoryInformation)!;
+    info.updateCharacteristic(C.SerialNumber, this.status.charger_id);
     const version = formatSwVersion(this.status.sw_ver);
     if (version) {
       info.updateCharacteristic(C.FirmwareRevision, version);

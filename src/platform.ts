@@ -1,3 +1,5 @@
+import { promises as dns } from 'dns';
+
 import type {
   API,
   Characteristic,
@@ -37,6 +39,14 @@ export interface ChargerConfigEntry {
   autostartSwitch?: boolean;
 }
 
+/** What a discovered charger persists in the accessory context: no secrets. */
+interface DiscoveredContext {
+  name: string;
+  host: string;
+  port: number;
+  shortId: string;
+}
+
 export class VoltieChargerPlatform implements DynamicPlatformPlugin {
   readonly Service: typeof Service;
   readonly Characteristic: typeof Characteristic;
@@ -74,41 +84,58 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
         continue;
       }
       const uuid = this.api.hap.uuid.generate(`voltie-charger:${entry.host}:${entry.port ?? DEFAULT_PORT}`);
-      this.startCharger(uuid, entry, false);
+      if (handled.has(uuid)) {
+        this.log.warn('Duplicate charger entry for %s:%d ignored', entry.host, entry.port ?? DEFAULT_PORT);
+        continue;
+      }
+      this.startCharger(uuid, entry, undefined);
       handled.add(uuid);
     }
 
-    if (this.config.discovery !== false) {
-      await this.discoverAndStart(entries, handled);
-    }
+    // Manual entries may use DNS names; resolve them so discovery can tell
+    // that an mDNS hit is the same physical device as a configured one.
+    const manualAddresses = await resolveManualAddresses(entries);
+    const coveredByManual = (address: string, shortId: string): boolean =>
+      manualAddresses.has(address)
+      || entries.some((entry) => (entry.host ?? '').toLowerCase().includes(`voltiecharger-${shortId}`));
 
-    // Previously discovered chargers that did not answer this browse (powered
-    // off, busy network) keep working from their cached context instead of
-    // disappearing from HomeKit.
-    for (const cached of this.cachedAccessories) {
-      if (handled.has(cached.UUID)) {
-        continue;
-      }
-      const entry = cached.context.entry as ChargerConfigEntry | undefined;
-      if (cached.context.discovered === true && entry?.host) {
-        this.log.info('Keeping previously discovered charger: %s (%s)', cached.displayName, entry.host);
-        this.startCharger(cached.UUID, entry, true);
-        handled.add(cached.UUID);
+    if (this.config.discovery !== false) {
+      await this.discoverAndStart(coveredByManual, handled);
+
+      // Previously discovered chargers that did not answer this browse
+      // (powered off, busy network) keep working from their cached context
+      // instead of disappearing from HomeKit.
+      for (const cached of this.cachedAccessories) {
+        if (handled.has(cached.UUID)) {
+          continue;
+        }
+        const ctx = cached.context.discovered as DiscoveredContext | undefined;
+        if (ctx?.host && !coveredByManual(ctx.host, ctx.shortId ?? '')) {
+          this.log.info('Keeping previously discovered charger: %s (%s)', cached.displayName, ctx.host);
+          this.startCharger(cached.UUID, { name: ctx.name, host: ctx.host, port: ctx.port }, ctx);
+          handled.add(cached.UUID);
+        }
       }
     }
 
     const stale = this.cachedAccessories.filter((cached) => !handled.has(cached.UUID));
     if (stale.length > 0) {
-      this.log.info('Removing %d charger(s) no longer present in config', stale.length);
+      this.log.info('Removing %d charger(s) no longer present in config or on the network', stale.length);
       this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
     }
   }
 
-  private async discoverAndStart(entries: ChargerConfigEntry[], handled: Set<string>): Promise<void> {
+  private async discoverAndStart(
+    coveredByManual: (address: string, shortId: string) => boolean,
+    handled: Set<string>,
+  ): Promise<void> {
     this.log.info('Browsing for Voltie chargers via mDNS (%d s)...', DISCOVERY_TIMEOUT_MS / 1000);
     let found;
     try {
-      found = await discoverChargers(DISCOVERY_TIMEOUT_MS);
+      found = await discoverChargers(
+        DISCOVERY_TIMEOUT_MS,
+        (error) => this.log.warn('mDNS error during discovery: %s', error),
+      );
     } catch (error) {
       this.log.warn('mDNS discovery failed: %s', error);
       return;
@@ -116,12 +143,7 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
     this.log.info('Discovery finished: %d charger(s) found', found.length);
 
     await Promise.all(found.map(async (charger) => {
-      // A manually configured entry for the same device wins over discovery.
-      const manual = entries.some((entry) =>
-        entry.host === charger.address
-        || (entry.host ?? '').toLowerCase().includes(`voltiecharger-${charger.shortId}`),
-      );
-      if (manual) {
+      if (coveredByManual(charger.address, charger.shortId)) {
         return;
       }
       // Only chargers with a working HTTP API become accessories; a charger
@@ -137,12 +159,13 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
         );
         return;
       }
-      const entry: ChargerConfigEntry = {
+      const ctx: DiscoveredContext = {
         name: `Voltie ${charger.shortId.toUpperCase()}`,
         host: charger.address,
         port: DEFAULT_PORT,
+        shortId: charger.shortId,
       };
-      this.startCharger(uuid, entry, true);
+      this.startCharger(uuid, { name: ctx.name, host: ctx.host, port: ctx.port }, ctx);
       handled.add(uuid);
     }));
   }
@@ -156,30 +179,54 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
     }
   }
 
-  private startCharger(uuid: string, entry: ChargerConfigEntry, discovered: boolean): void {
+  private startCharger(uuid: string, entry: ChargerConfigEntry, discovered: DiscoveredContext | undefined): void {
     const port = entry.port ?? DEFAULT_PORT;
+    const rawInterval = Number(entry.pollInterval);
     const pollInterval = clamp(
-      entry.pollInterval ?? DEFAULT_POLL_INTERVAL_S,
+      Number.isFinite(rawInterval) && rawInterval > 0 ? rawInterval : DEFAULT_POLL_INTERVAL_S,
       MIN_POLL_INTERVAL_S,
       MAX_POLL_INTERVAL_S,
     );
     const name = entry.name || `Voltie ${entry.host}`;
 
+    if ((entry.username || entry.password) && !(entry.username && entry.password)) {
+      this.log.warn('[%s] Both username and password are needed for HTTP API auth; ignoring the one given', name);
+    }
+
     let accessory = this.cachedAccessories.find((cached) => cached.UUID === uuid);
     if (accessory) {
       this.log.info('Restoring charger from cache: %s (%s:%d)', name, entry.host, port);
-      accessory.context.entry = entry;
-      accessory.context.discovered = discovered;
     } else {
       this.log.info('Adding charger: %s (%s:%d)%s', name, entry.host, port, discovered ? ' [discovered]' : '');
       accessory = new this.api.platformAccessory(name, uuid);
-      accessory.context.entry = entry;
-      accessory.context.discovered = discovered;
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      this.cachedAccessories.push(accessory);
     }
+    // Only discovered chargers persist context (host/port/name, no secrets);
+    // manual entries always come from config.json.
+    accessory.context.discovered = discovered;
 
     new VoltieChargerAccessory(this, accessory, { ...entry, port, pollInterval, name });
   }
+}
+
+async function resolveManualAddresses(entries: ChargerConfigEntry[]): Promise<Set<string>> {
+  const addresses = new Set<string>();
+  await Promise.all(entries.map(async (entry) => {
+    if (!entry.host) {
+      return;
+    }
+    addresses.add(entry.host);
+    try {
+      for (const result of await dns.lookup(entry.host, { all: true })) {
+        addresses.add(result.address);
+      }
+    } catch {
+      // Unresolvable now (e.g. .local name from a container): the raw host
+      // string was still added, and the shortId match remains as fallback.
+    }
+  }));
+  return addresses;
 }
 
 function clamp(value: number, min: number, max: number): number {

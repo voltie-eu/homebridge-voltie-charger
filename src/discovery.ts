@@ -1,4 +1,4 @@
-import { Bonjour } from 'bonjour-service';
+import { Bonjour, Browser } from 'bonjour-service';
 
 /**
  * Voltie chargers advertise themselves as `_voltie-info._tcp` via avahi, with
@@ -12,23 +12,40 @@ export interface DiscoveredCharger {
   address: string;
 }
 
-export function discoverChargers(timeoutMs: number): Promise<DiscoveredCharger[]> {
+export function discoverChargers(
+  timeoutMs: number,
+  onError?: (error: unknown) => void,
+): Promise<DiscoveredCharger[]> {
   return new Promise((resolve) => {
-    const bonjour = new Bonjour();
     const found = new Map<string, DiscoveredCharger>();
+    let bonjour: Bonjour | undefined;
+    let browser: Browser | undefined;
+    let timer: NodeJS.Timeout | undefined;
+    let done = false;
 
     const finish = () => {
+      if (done) {
+        return;
+      }
+      done = true;
       clearTimeout(timer);
       try {
-        browser.stop();
-        bonjour.destroy();
+        browser?.stop();
+        bonjour?.destroy();
       } catch {
         // mDNS socket teardown is best-effort
       }
       resolve([...found.values()]);
     };
 
-    const browser = bonjour.find({ type: 'voltie-info', protocol: 'tcp' }, (service) => {
+    // Socket-level failures (EACCES/EADDRINUSE on UDP 5353, IPv6-only hosts)
+    // arrive through this callback; without it they would crash the process.
+    bonjour = new Bonjour(undefined, (error: unknown) => {
+      onError?.(error);
+      finish();
+    });
+
+    browser = bonjour.find({ type: 'voltie-info', protocol: 'tcp' }, (service) => {
       const label = `${service.name ?? ''} ${service.host ?? ''}`.toLowerCase();
       const match = label.match(/voltiecharger-([0-9a-f]{4})/);
       if (!match) {
@@ -41,6 +58,6 @@ export function discoverChargers(timeoutMs: number): Promise<DiscoveredCharger[]
       found.set(match[1], { shortId: match[1], address });
     });
 
-    const timer = setTimeout(finish, timeoutMs);
+    timer = setTimeout(finish, timeoutMs);
   });
 }

@@ -1,6 +1,6 @@
 # homebridge-voltie-charger
 
-Homebridge plugin for [Voltie](https://voltie.eu) EV chargers. Talks to the charger directly on your local network through its built-in HTTP API (v5.x, default port 5059), with no cloud connection required. Chargers on the local network are **discovered automatically** via mDNS/Bonjour, so in the common case there is nothing to configure.
+Homebridge plugin for [Voltie](https://voltie.eu) EV chargers. Talks to the charger directly on your local network through its built-in HTTP API (v5.x, default port 5059), with no cloud connection required. Chargers on the local network are **discovered automatically** at startup via mDNS/Bonjour, so in the common case there is nothing to configure. (Restart Homebridge to pick up a charger added to the network later.)
 
 > Already running Home Assistant? Consider the official [Voltie Home Assistant integration](https://github.com/voltie-eu/homeassistant-voltie_charger) together with HA's built-in HomeKit Bridge instead, as it exposes far more entities. This plugin is for households that use Apple Home without Home Assistant.
 
@@ -10,8 +10,8 @@ HomeKit has no native EV charger category, so the charger is mapped onto standar
 
 | Service | Function |
 |---|---|
-| **Outlet** | On = charging is active; switching it starts/stops charging. "In Use" = car connected. |
-| **Lightbulb dimmer** ("Current") | Charging current limit: 0% = 6 A, 100% = the charger's hardware maximum. On/off also starts/stops charging. Siri: *"Set the charger current to 50%"* |
+| **Outlet** | On = charging is active or enabled (waiting for the car); switching it starts/stops charging. "In Use" = car connected. |
+| **Lightbulb dimmer** ("Current") | Charging current limit: 0% = 6 A, 100% = the charger's hardware maximum (up to 32 A). On/off also starts/stops charging. Siri: *"Set the charger current to 50%"* |
 | **Contact sensor** ("Car Connected") | Opens when a car is plugged in: use it to trigger automations. |
 | **Contact sensor** ("Fault") | Opens when the EVSE reports a fault state (GFCI, no ground, overtemperature, ...). |
 | **Lock** ("RFID Lock", optional) | Locked = charging requires an RFID card, Unlocked = free charging. |
