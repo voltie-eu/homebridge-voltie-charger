@@ -77,9 +77,31 @@ Chargers can also be configured explicitly via the Homebridge UI, or manually; e
 - The current-limit dimmer writes the charger's persistent configuration; the debounced slider makes sure only the final value is written.
 - Beware of "turn off all the lights" style scenes if you enable the dimmer: the bulb's off switch stops charging. Disable `currentControl` if that bothers you.
 
+## Firmware compatibility
+
+The plugin adapts to what the charger reports:
+
+- The Single Phase switch only appears on chargers that report phase-switching support.
+- The rear LED lamp's on/off maps to the charger's persistent LED setting on current firmware, with a transparent fallback on older firmware.
+- Config fields missing from a firmware are simply not written; commands the firmware rejects as unknown log a "firmware too old" hint.
+
+## Troubleshooting 🛠️
+
+**Charger not discovered.** Confirm the HTTP API is enabled in the Voltie app. If your network blocks mDNS (VLANs, some Docker setups without host networking), add the charger manually by IP.
+
+**Authentication fails.** The credentials are the ones set inside the charger's HTTP API config, not your Voltie cloud account.
+
+**Accessory shows "No Response".** The plugin retries automatically; if it persists, check the charger's power and Wi-Fi signal. The log shows a one-line reason (`homebridge -D` adds full detail).
+
+**"Firmware too old" in the log.** The plugin needs the v5 HTTP API. Update the charger from the Voltie app.
+
 ## Development
 
 ```bash
 npm install
 npm run build
 ```
+
+## License
+
+MIT. Copyright © 2026 Voltie Kft. See [LICENSE](LICENSE).
