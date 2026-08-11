@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.6
+
+- Tidier settings form: credentials, optional services and the manually configured chargers list live in collapsible sections, so the default view is just the name and the discovery toggle. The blank charger row is no longer visible unless you open the manual section (a saved host-less row remains harmless and ignored)
+
 ## 0.1.5
 
 - Rear LED lamp On/Off now maps to the charger's persistent LED-enable setting with real readback; turning it off also cancels any active colour override (which used to keep glowing for up to an hour). Colour and brightness still use the temporary override, and the last set colour survives restarts

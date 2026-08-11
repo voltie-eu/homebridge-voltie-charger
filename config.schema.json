@@ -220,8 +220,71 @@
           "required": [
             "host"
           ]
-        }
+        },
+        "default": []
       }
     }
-  }
+  },
+  "layout": [
+    "name",
+    "discovery",
+    {
+      "type": "fieldset",
+      "title": "Credentials (all chargers)",
+      "expandable": true,
+      "expanded": false,
+      "items": [
+        "username",
+        "password"
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "Optional services (all chargers)",
+      "expandable": true,
+      "expanded": false,
+      "items": [
+        "currentControl",
+        "carConnectedSensor",
+        "faultSensor",
+        "chargeCompleteSensor",
+        "accessLock",
+        "autostartSwitch",
+        "singlePhaseSwitch",
+        "rebootSwitch",
+        "rearLedLight"
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "Manually configured chargers",
+      "expandable": true,
+      "expanded": false,
+      "items": [
+        {
+          "key": "chargers",
+          "type": "array",
+          "title": "Charger",
+          "items": [
+            "chargers[].name",
+            "chargers[].host",
+            "chargers[].port",
+            "chargers[].username",
+            "chargers[].password",
+            "chargers[].pollInterval",
+            "chargers[].idTag",
+            "chargers[].currentControl",
+            "chargers[].carConnectedSensor",
+            "chargers[].faultSensor",
+            "chargers[].chargeCompleteSensor",
+            "chargers[].accessLock",
+            "chargers[].autostartSwitch",
+            "chargers[].singlePhaseSwitch",
+            "chargers[].rebootSwitch",
+            "chargers[].rearLedLight"
+          ]
+        }
+      ]
+    }
+  ]
 }
