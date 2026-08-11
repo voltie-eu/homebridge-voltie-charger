@@ -233,6 +233,14 @@ export function isSwitchedOn(status: ChargerStatus): boolean {
   return isCharging(status) || status.charge_enabled === true;
 }
 
+// Fault states per the firmware's EVSE state enum (Modbus API doc v1.1 ch. 5,
+// which documents the same internal enum the HTTP API reports): 5..17 are
+// EVSE/internal errors, 20 = no MID meter, 21 = HPOW board unidentified.
+// 18 (charger disabled), 19 (boot), 24 (state undetermined) and
+// 25 (VoltieMeter firmware upload) are NOT faults — treating everything >= 5
+// as a fault made the Fault sensor fire on every charger boot.
+const FAULT_STATES = new Set([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 20, 21]);
+
 export function isFault(status: ChargerStatus): boolean {
-  return typeof status.evse_state === 'number' && status.evse_state >= 5;
+  return typeof status.evse_state === 'number' && FAULT_STATES.has(status.evse_state);
 }

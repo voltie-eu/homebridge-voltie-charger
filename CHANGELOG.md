@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7
+
+- The Fault sensor no longer opens on non-fault charger states: booting, charger disabled, state-not-yet-determined and VoltieMeter-firmware-upload were misclassified as faults (every charger restart triggered a false fault notification). Fault states now follow the firmware's documented EVSE state list, including the previously missed "no MID meter" and "power board unidentified" states
+
 ## 0.1.6
 
 - Tidier settings form: credentials, optional services and the manually configured chargers list live in collapsible sections, so the default view is just the name and the discovery toggle. The blank charger row is no longer visible unless you open the manual section (a saved host-less row remains harmless and ignored)
