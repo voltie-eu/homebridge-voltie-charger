@@ -54,6 +54,7 @@ export class VoltieChargerAccessory {
   private lastLockState?: number;
   private prevActivelyCharging?: boolean;
   private chargeComplete = false;
+  private chargeCompleteCandidatePolls = 0;
 
   private brightnessTimer?: NodeJS.Timeout;
   private refreshTimer?: NodeJS.Timeout;
@@ -712,19 +713,29 @@ export class VoltieChargerAccessory {
   private updateChargeComplete(): void {
     const activelyCharging = isCharging(this.status);
     const carConnected = isCarConnected(this.status);
-    if (
-      this.prevActivelyCharging === true
-      && !activelyCharging
+    // "Car finished" = the charger is still OFFERING current but the car
+    // stopped drawing. When DLM/eco/solar/grid modes pause the session, the
+    // charger offers 0 A — indistinguishable from "full" without this guard,
+    // and it would fire on every solar lull. Requiring the condition to hold
+    // for two polls also rides out brief car-side pauses.
+    const offered = this.status.current_offered;
+    const candidate = !activelyCharging
       && carConnected
       && this.status.charge_enabled === true
-    ) {
-      if (!this.chargeComplete) {
-        this.platform.log.info('[%s] Charging finished (car stopped drawing while still enabled)', this.entry.name);
+      && typeof offered === 'number'
+      && offered >= CURRENT_LIMIT_MIN_A;
+    if (candidate && (this.prevActivelyCharging === true || this.chargeCompleteCandidatePolls > 0)) {
+      this.chargeCompleteCandidatePolls += 1;
+      if (this.chargeCompleteCandidatePolls >= 2 && !this.chargeComplete) {
+        this.platform.log.info('[%s] Charging finished (car stopped drawing while power is still offered)', this.entry.name);
+        this.chargeComplete = true;
       }
-      this.chargeComplete = true;
+    } else if (!candidate) {
+      this.chargeCompleteCandidatePolls = 0;
     }
     if (activelyCharging || !carConnected) {
       this.chargeComplete = false;
+      this.chargeCompleteCandidatePolls = 0;
     }
     this.prevActivelyCharging = activelyCharging;
   }

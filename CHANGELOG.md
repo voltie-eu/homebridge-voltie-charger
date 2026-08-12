@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.9
+
+- The Charge Complete sensor no longer fires when DLM/eco/solar/grid modes pause the session: it now requires the charger to still be offering current (the car declining it is what "full" looks like), and the condition must hold for two polls, riding out brief car-side pauses
+
 ## 0.1.8
 
 - A colour set from HomeKit is no longer kept alive forever: it expires after the firmware's one-hour window and the LED returns to the charger's own behaviour. The permanent refresh silently overrode the LED controls in the Voltie app, which appeared dead while HomeKit held a colour
