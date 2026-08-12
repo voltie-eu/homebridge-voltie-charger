@@ -12,7 +12,7 @@ import {
   VoltieClient,
 } from './client';
 import type { ChargerConfigEntry, VoltieChargerPlatform } from './platform';
-import { CURRENT_LIMIT_FALLBACK_MAX_A, CURRENT_LIMIT_MIN_A, REAR_LED_KEEPALIVE_MS, START_NAME } from './settings';
+import { CURRENT_LIMIT_FALLBACK_MAX_A, CURRENT_LIMIT_MIN_A, START_NAME } from './settings';
 
 interface ResolvedEntry extends ChargerConfigEntry {
   name: string;
@@ -58,7 +58,6 @@ export class VoltieChargerAccessory {
   private brightnessTimer?: NodeJS.Timeout;
   private refreshTimer?: NodeJS.Timeout;
   private rearLedTimer?: NodeJS.Timeout;
-  private rearLedKeepAliveTimer?: NodeJS.Timeout;
   private rebootResetTimer?: NodeJS.Timeout;
 
   // The rear LED command is fire-and-forget on the charger (no readback), so
@@ -146,7 +145,6 @@ export class VoltieChargerAccessory {
       clearTimeout(this.brightnessTimer);
       clearTimeout(this.refreshTimer);
       clearTimeout(this.rearLedTimer);
-      clearTimeout(this.rearLedKeepAliveTimer);
       clearTimeout(this.rebootResetTimer);
     });
   }
@@ -526,7 +524,6 @@ export class VoltieChargerAccessory {
     this.rearLed.on = on;
     if (!on) {
       clearTimeout(this.rearLedTimer);
-      clearTimeout(this.rearLedKeepAliveTimer);
     }
     if (typeof this.config.conf_rear_led_enabled !== 'boolean') {
       // Older firmware: keep the transient-override behaviour.
@@ -584,14 +581,11 @@ export class VoltieChargerAccessory {
             this.rearLedService?.updateCharacteristic(this.platform.Characteristic.On, false);
           }
         })
-        .finally(() => {
-          // The firmware expires the effect after an hour; while the lamp is
-          // on, refresh it (also retries after a failed send).
-          clearTimeout(this.rearLedKeepAliveTimer);
-          if (this.rearLed.on) {
-            this.rearLedKeepAliveTimer = setTimeout(() => this.sendRearLed(), REAR_LED_KEEPALIVE_MS);
-          }
-        });
+        ;
+      // No keep-alive: the colour override expires after the firmware's hour
+      // on purpose, returning the LED to the charger's own behaviour — a
+      // forever-refreshed override silently overrode the Voltie app's LED
+      // controls too.
     }, BRIGHTNESS_DEBOUNCE_MS);
   }
 

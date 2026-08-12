@@ -22,7 +22,7 @@ HomeKit has no native EV charger category, so the charger is mapped onto standar
 | **Switch** ("Autostart", optional) | The charger's autostart setting. |
 | **Switch** ("Single Phase", automatic) | Forces 1-phase charging (for solar surplus). Appears only on chargers that support phase switching; `singlePhaseSwitch: "show"`/`"hide"` overrides. |
 | **Switch** ("Reboot", optional) | Momentary switch that reboots the charger. |
-| **Lightbulb** ("Rear LED", optional) | The charger's rear LED strip as a color lamp (effect expires after an hour, a firmware limit). |
+| **Lightbulb** ("Rear LED", optional) | The charger's rear LED strip as a color lamp. On/off is the persistent LED setting; a colour is a temporary one-hour effect. |
 
 Live power (W), total session energy (kWh), voltage and current are attached to the Outlet as Eve characteristics: visible in Eve, Controller or Home+ (the native Home app ignores them).
 

@@ -18,5 +18,3 @@ export const DISCOVERY_TIMEOUT_MS = 8000;
 // Re-browse cadence so chargers added to the network later appear without a
 // Homebridge restart.
 export const REDISCOVERY_INTERVAL_MS = 10 * 60 * 1000;
-// Re-send the rear LED command before the firmware's 1 h effect expiry.
-export const REAR_LED_KEEPALIVE_MS = 45 * 60 * 1000;

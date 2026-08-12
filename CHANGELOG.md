@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.8
+
+- A colour set from HomeKit is no longer kept alive forever: it expires after the firmware's one-hour window and the LED returns to the charger's own behaviour. The permanent refresh silently overrode the LED controls in the Voltie app, which appeared dead while HomeKit held a colour
+
 ## 0.1.7
 
 - The Fault sensor no longer opens on non-fault charger states: booting, charger disabled, state-not-yet-determined and VoltieMeter-firmware-upload were misclassified as faults (every charger restart triggered a false fault notification). Fault states now follow the firmware's documented EVSE state list, including the previously missed "no MID meter" and "power board unidentified" states

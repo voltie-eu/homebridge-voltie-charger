@@ -98,7 +98,7 @@
         "title": "Rear LED light (color Lightbulb) (all chargers)",
         "type": "boolean",
         "default": false,
-        "description": "Exposes the charger's rear LED strip as a color lamp. The effect expires after an hour (firmware limit)."
+        "description": "Exposes the charger's rear LED strip as a color lamp. On/off is the charger's persistent LED setting; a colour set from HomeKit is a temporary one-hour effect, after which the LED returns to the charger's own behaviour."
       },
       "chargers": {
         "title": "Chargers",
@@ -214,7 +214,7 @@
               "title": "Rear LED light (color Lightbulb)",
               "type": "boolean",
               "default": false,
-              "description": "Exposes the charger's rear LED strip as a color lamp. The effect expires after an hour (firmware limit)."
+              "description": "Exposes the charger's rear LED strip as a color lamp. On/off is the charger's persistent LED setting; a colour set from HomeKit is a temporary one-hour effect, after which the LED returns to the charger's own behaviour."
             }
           },
           "required": [
