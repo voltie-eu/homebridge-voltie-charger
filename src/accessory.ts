@@ -167,7 +167,7 @@ export class VoltieChargerAccessory {
       .onGet(() => this.guarded(() => isSwitchedOn(this.status)))
       .onSet((value) => this.setCharging(value === true));
     this.currentService.getCharacteristic(C.Brightness)
-      .onGet(() => this.guarded(() => this.percentFromAmps(this.config.conf_current_limit)))
+      .onGet(() => this.guarded(() => this.percentFromAmps(this.displayedAmps())))
       .onSet((value) => this.setCurrentLimitPercent(value as number));
   }
 
@@ -670,7 +670,7 @@ export class VoltieChargerAccessory {
     this.currentService?.updateCharacteristic(C.On, charging);
     this.currentService?.updateCharacteristic(
       C.Brightness,
-      this.percentFromAmps(this.config.conf_current_limit),
+      this.percentFromAmps(this.displayedAmps()),
     );
     this.carSensorService?.updateCharacteristic(C.ContactSensorState, this.carSensorValue());
     this.faultSensorService?.updateCharacteristic(C.ContactSensorState, this.faultSensorValue());
@@ -776,6 +776,19 @@ export class VoltieChargerAccessory {
     }
     // Transient/unknown values keep the previous state.
     return this.lastLockState ?? LockCurrentState.UNSECURED;
+  }
+
+  /**
+   * The dimmer shows what the charger is actually OFFERING while a session
+   * runs (the config limit can sit dormant until the next write), and the
+   * stored config limit otherwise. Writes always go to conf_current_limit.
+   */
+  private displayedAmps(): number | undefined {
+    const offered = this.status.current_offered;
+    if (isCharging(this.status) && typeof offered === 'number' && offered >= CURRENT_LIMIT_MIN_A) {
+      return offered;
+    }
+    return this.config.conf_current_limit;
   }
 
   private maxAmps(): number {
