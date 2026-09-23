@@ -7,6 +7,12 @@ import { Bonjour, Browser } from 'bonjour-service';
  * on the host network (which HomeKit requires anyway); resolving `.local`
  * names often does not, so the discovered IPv4 address is used for API calls.
  */
+// Moments within the browse window to ask again: a single mDNS query is
+// often missed by a charger on Wi-Fi power save (measured on a home network:
+// one of three chargers missing in about every fourth single-query browse,
+// none missing with two repeats).
+const REQUERY_AT_MS = [1500, 4000];
+
 export interface DiscoveredCharger {
   shortId: string;
   address: string;
@@ -21,6 +27,7 @@ export function discoverChargers(
     let bonjour: Bonjour | undefined;
     let browser: Browser | undefined;
     let timer: NodeJS.Timeout | undefined;
+    let requeries: NodeJS.Timeout[] = [];
     let done = false;
 
     const finish = () => {
@@ -29,6 +36,7 @@ export function discoverChargers(
       }
       done = true;
       clearTimeout(timer);
+      requeries.forEach(clearTimeout);
       try {
         browser?.stop();
         bonjour?.destroy();
@@ -58,6 +66,15 @@ export function discoverChargers(
       found.set(match[1], { shortId: match[1], address });
     });
 
+    requeries = REQUERY_AT_MS
+      .filter((at) => at < timeoutMs)
+      .map((at) => setTimeout(() => {
+        try {
+          browser?.update();
+        } catch {
+          // a failed re-query just leaves the first answers
+        }
+      }, at));
     timer = setTimeout(finish, timeoutMs);
   });
 }

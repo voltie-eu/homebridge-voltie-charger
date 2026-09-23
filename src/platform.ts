@@ -11,7 +11,7 @@ import type {
 } from 'homebridge';
 
 import { VoltieChargerAccessory } from './accessory';
-import { errorText, VoltieApiError, VoltieClient } from './client';
+import { errorText, isAuthError, VoltieClient } from './client';
 import { discoverChargers } from './discovery';
 import { buildEveCharacteristics, EveCharacteristics } from './eve';
 import {
@@ -23,6 +23,7 @@ import {
   PLATFORM_NAME,
   PLUGIN_NAME,
   REDISCOVERY_INTERVAL_MS,
+  UNREACHABLE_REDISCOVERY_MIN_GAP_MS,
 } from './settings';
 
 export interface ChargerConfigEntry {
@@ -42,6 +43,14 @@ export interface ChargerConfigEntry {
   singlePhaseSwitch?: boolean | string;
   rebootSwitch?: boolean;
   rearLedLight?: boolean;
+  outOfServiceSwitch?: boolean;
+  quietModeSwitch?: boolean;
+  dlmDynamicSwitch?: boolean;
+  ecoModeSwitch?: boolean;
+  greenModeSwitch?: boolean;
+  gridControlSwitch?: boolean;
+  keepLastSessionEnergy?: boolean;
+  eveHistory?: boolean;
 }
 
 /** What a discovered charger persists in the accessory context: no secrets. */
@@ -59,6 +68,16 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
 
   private readonly cachedAccessories: PlatformAccessory[] = [];
   private readonly handled = new Set<string>();
+  // Running handlers of discovered chargers, so a re-browse can move one to
+  // its new DHCP address instead of leaving it "No Response" until restart.
+  private readonly discoveredRunning = new Map<string, VoltieChargerAccessory>();
+  // Chargers skipped by the API probe, with the reason; logged once per
+  // change instead of on every 10-minute re-browse.
+  private readonly skipped = new Map<string, 'auth' | 'fail'>();
+  private coveredByManual: (address: string, shortId: string) => boolean = () => false;
+  private discoveryRunning = false;
+  private stopped = false;
+  private lastUnreachableBrowse = 0;
 
   constructor(
     readonly log: Logging,
@@ -69,6 +88,9 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
     this.Characteristic = api.hap.Characteristic;
     this.eve = buildEveCharacteristics(api);
 
+    api.on('shutdown', () => {
+      this.stopped = true;
+    });
     api.on('didFinishLaunching', () => {
       this.setupChargers().catch((error) => this.log.error('Charger setup failed: %s', errorText(error)));
     });
@@ -111,9 +133,10 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
     const coveredByManual = (address: string, shortId: string): boolean =>
       manualAddresses.has(address)
       || entries.some((entry) => (entry.host ?? '').toLowerCase().includes(`voltiecharger-${shortId}`));
+    this.coveredByManual = coveredByManual;
 
     if (this.config.discovery !== false) {
-      await this.discoverAndStart(coveredByManual, handled);
+      await this.discoverAndStart(handled);
 
       // Previously discovered chargers that did not answer this browse
       // (powered off, busy network) keep working from their cached context
@@ -140,18 +163,41 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
     // Chargers added to the network later show up without a restart.
     if (this.config.discovery !== false) {
       const timer = setInterval(() => {
-        this.discoverAndStart(coveredByManual, handled, true)
+        this.discoverAndStart(handled, true)
           .catch((error) => this.log.debug('Periodic discovery failed: %s', error));
       }, REDISCOVERY_INTERVAL_MS);
       this.api.on('shutdown', () => clearInterval(timer));
     }
   }
 
-  private async discoverAndStart(
-    coveredByManual: (address: string, shortId: string) => boolean,
-    handled: Set<string>,
-    quiet = false,
-  ): Promise<void> {
+  /** A discovered charger stopped answering: most often a new DHCP lease, so
+   * browse again right away instead of waiting for the periodic re-browse. */
+  private onDiscoveredUnreachable(): void {
+    const now = Date.now();
+    if (now - this.lastUnreachableBrowse < UNREACHABLE_REDISCOVERY_MIN_GAP_MS) {
+      return;
+    }
+    this.lastUnreachableBrowse = now;
+    this.discoverAndStart(this.handled, true)
+      .catch((error) => this.log.debug('Re-discovery after unreachable charger failed: %s', error));
+  }
+
+  private async discoverAndStart(handled: Set<string>, quiet = false): Promise<void> {
+    // One mDNS browse at a time; the periodic and the unreachable-triggered
+    // browse could otherwise overlap and race on the same charger.
+    if (this.discoveryRunning || this.stopped) {
+      return;
+    }
+    this.discoveryRunning = true;
+    try {
+      await this.browseAndStart(handled, quiet);
+    } finally {
+      this.discoveryRunning = false;
+    }
+  }
+
+  private async browseAndStart(handled: Set<string>, quiet: boolean): Promise<void> {
+    const coveredByManual = this.coveredByManual;
     const logLine = quiet ? this.log.debug.bind(this.log) : this.log.info.bind(this.log);
     logLine('Browsing for Voltie chargers via mDNS (%d s)...', DISCOVERY_TIMEOUT_MS / 1000);
     let found;
@@ -170,35 +216,45 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
       if (coveredByManual(charger.address, charger.shortId)) {
         return;
       }
-      const knownUuid = this.api.hap.uuid.generate(`voltie-discovered:${charger.shortId}`);
-      if (handled.has(knownUuid)) {
+      const uuid = this.api.hap.uuid.generate(`voltie-discovered:${charger.shortId}`);
+      if (handled.has(uuid)) {
         // Already running from this launch; a re-browse must not spawn a
-        // second handler for the same charger.
+        // second handler, but it does carry an address change over.
+        const running = this.discoveredRunning.get(uuid);
+        const cached = this.cachedAccessories.find((acc) => acc.UUID === uuid);
+        const ctx = cached?.context.discovered as DiscoveredContext | undefined;
+        if (running && ctx && ctx.host !== charger.address) {
+          ctx.host = charger.address;
+          running.updateHost(charger.address);
+        }
         return;
       }
       // Only chargers with a working HTTP API become accessories; a charger
       // that advertises via mDNS but has the API disabled would otherwise sit
       // in HomeKit as a permanent "No Response" tile.
-      const uuid = this.api.hap.uuid.generate(`voltie-discovered:${charger.shortId}`);
       const alreadyCached = this.cachedAccessories.some((cached) => cached.UUID === uuid);
       if (!alreadyCached) {
         const probe = await this.probeCharger(charger.address);
-        if (probe === 'auth') {
-          this.log.info(
-            'Found charger %s at %s, but its HTTP API requires authentication; skipping. '
-            + 'Set the platform-level username/password, or add the charger manually with credentials.',
-            charger.shortId.toUpperCase(), charger.address,
-          );
+        if (probe !== 'ok') {
+          const firstTime = this.skipped.get(charger.shortId) !== probe;
+          this.skipped.set(charger.shortId, probe);
+          const log = firstTime ? this.log.info.bind(this.log) : this.log.debug.bind(this.log);
+          if (probe === 'auth') {
+            log(
+              'Found charger %s at %s, but its HTTP API requires authentication; skipping. '
+              + 'Set the platform-level username/password, or add the charger manually with credentials.',
+              charger.shortId.toUpperCase(), charger.address,
+            );
+          } else {
+            log(
+              'Found charger %s at %s, but its HTTP API is not reachable; skipping. '
+              + 'Enable the HTTP API in the Voltie app to use it with HomeKit.',
+              charger.shortId.toUpperCase(), charger.address,
+            );
+          }
           return;
         }
-        if (probe === 'fail') {
-          this.log.info(
-            'Found charger %s at %s, but its HTTP API is not reachable; skipping. '
-            + 'Enable the HTTP API in the Voltie app to use it with HomeKit.',
-            charger.shortId.toUpperCase(), charger.address,
-          );
-          return;
-        }
+        this.skipped.delete(charger.shortId);
       }
       const ctx: DiscoveredContext = {
         name: `Voltie ${charger.shortId.toUpperCase()}`,
@@ -218,9 +274,7 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
       await new VoltieClient(address, DEFAULT_PORT, username, password).getStatus();
       return 'ok';
     } catch (error) {
-      return error instanceof VoltieApiError && error.message.includes('Authentication')
-        ? 'auth'
-        : 'fail';
+      return isAuthError(error) ? 'auth' : 'fail';
     }
   }
 
@@ -243,6 +297,7 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
     const featureKeys = [
       'pollInterval', 'idTag', 'currentControl', 'carConnectedSensor', 'faultSensor',
       'chargeCompleteSensor', 'accessLock', 'autostartSwitch', 'singlePhaseSwitch', 'rebootSwitch', 'rearLedLight',
+      'outOfServiceSwitch', 'quietModeSwitch', 'dlmDynamicSwitch', 'ecoModeSwitch', 'greenModeSwitch', 'gridControlSwitch', 'keepLastSessionEnergy', 'eveHistory',
     ] as const;
     for (const key of featureKeys) {
       if (merged[key] === undefined && this.config[key] !== undefined) {
@@ -280,7 +335,15 @@ export class VoltieChargerPlatform implements DynamicPlatformPlugin {
     // manual entries always come from config.json.
     accessory.context.discovered = discovered;
 
-    new VoltieChargerAccessory(this, accessory, { ...entry, port, pollInterval, name });
+    const handler = new VoltieChargerAccessory(
+      this,
+      accessory,
+      { ...entry, port, pollInterval, name },
+      discovered && this.config.discovery !== false ? { onUnreachable: () => this.onDiscoveredUnreachable() } : {},
+    );
+    if (discovered) {
+      this.discoveredRunning.set(uuid, handler);
+    }
   }
 }
 

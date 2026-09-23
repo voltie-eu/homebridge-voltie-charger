@@ -18,3 +18,6 @@ export const DISCOVERY_TIMEOUT_MS = 8000;
 // Re-browse cadence so chargers added to the network later appear without a
 // Homebridge restart.
 export const REDISCOVERY_INTERVAL_MS = 10 * 60 * 1000;
+// A discovered charger that stops answering triggers an early re-browse (it
+// most likely got a new DHCP lease), but no more often than this.
+export const UNREACHABLE_REDISCOVERY_MIN_GAP_MS = 60 * 1000;

@@ -3,7 +3,7 @@
 [![verified-by-homebridge](https://img.shields.io/badge/homebridge-verified-blueviolet?color=%23491F59&style=for-the-badge&logoColor=%23FFFFFF&logo=homebridge)](https://github.com/homebridge/homebridge/wiki/Verified-Plugins)
 [![npm](https://img.shields.io/npm/v/homebridge-voltie-charger?style=for-the-badge)](https://www.npmjs.com/package/homebridge-voltie-charger)
 
-Homebridge plugin for [Voltie](https://voltie.eu) EV chargers. Talks to the charger directly on your local network through its built-in HTTP API (v5.x, default port 5059), with no cloud connection required. Chargers on the local network are **discovered automatically** at startup via mDNS/Bonjour, so in the common case there is nothing to configure. (Restart Homebridge to pick up a charger added to the network later.)
+Homebridge plugin for [Voltie](https://voltie.eu) EV chargers. Talks to the charger directly on your local network through its built-in HTTP API (v5.x, default port 5059), with no cloud connection required. Chargers on the local network are **discovered automatically** at startup via mDNS/Bonjour, so in the common case there is nothing to configure. Chargers added to the network later show up within about 10 minutes, and a charger that gets a new IP address from the router is followed automatically.
 
 > Already running Home Assistant? Consider the official [Voltie Home Assistant integration](https://github.com/voltie-eu/homeassistant-voltie_charger) together with HA's built-in HomeKit Bridge instead, as it exposes far more entities. This plugin is for households that use Apple Home without Home Assistant.
 
@@ -23,13 +23,16 @@ HomeKit has no native EV charger category, so the charger is mapped onto standar
 | **Switch** ("Single Phase", automatic) | Forces 1-phase charging (for solar surplus). Appears only on chargers that support phase switching; `singlePhaseSwitch: "show"`/`"hide"` overrides. |
 | **Switch** ("Reboot", optional) | Momentary switch that reboots the charger. |
 | **Lightbulb** ("Rear LED", optional) | The charger's rear LED strip as a color lamp. On/off is the persistent LED setting; a colour is a temporary one-hour effect. |
+| **Switch** ("Out of Service", optional) | On = the charger is out of service and cannot be used, for example during maintenance. |
+| **Switch** ("Quiet Mode", optional) | On = display, front LED and buzzer off, for example at night. Off restores what was on before. |
+| **Switches** ("Dynamic Load", "Eco Mode", "Green Mode", "Grid Control", each optional) | The charger's load management mode, one switch per mode, like radio buttons: turning one on switches the charger to that mode and the others go off. Turning the active one off returns to the mode used before. Dynamic, Eco and Green need an external meter (SensorBox or VoltieMeter), and the log warns if the charger reports none; Grid Control works without one. Green works on single-charger installations only. |
 
-Live power (W), total session energy (kWh), voltage and current are attached to the Outlet as Eve characteristics: visible in Eve, Controller or Home+ (the native Home app ignores them).
+Live power (W), session energy (kWh), voltage and current are attached to the Outlet as Eve characteristics: visible in Eve, Controller or Home+ (the native Home app ignores them). Between sessions the energy field keeps showing the last session (`keepLastSessionEnergy`, on by default). With `eveHistory` enabled, the plugin also records the charging power every 10 minutes, so the Eve app draws its usual power graphs (up to 28 days).
 
 ## Requirements
 
 - The charger's **HTTP API enabled** (Voltie app → charger settings), reachable from the Homebridge host.
-- Homebridge ≥ 1.8, Node.js ≥ 18.
+- Homebridge 1.8 or later (Homebridge 2.x is supported), Node.js 18 or later.
 
 ## Configuration
 
@@ -60,13 +63,27 @@ Chargers can also be configured explicitly via the Homebridge UI, or manually; e
 }
 ```
 
-`username`/`password` are only needed when the charger's HTTP API has authentication enabled; set them at the platform level to cover every charger (including discovered ones), or per charger entry to override. `idTag` lets the start command carry an RFID id when the charger is in RFID mode.
+`username`/`password` are only needed when the charger's HTTP API has authentication enabled; set them at the platform level to cover every charger (including discovered ones), or per charger entry to override. `idTag` lets the start command carry an RFID id when the charger is in RFID mode (at least 8 characters: letters, digits, `_` or `-`; the charger ignores anything else). `pollInterval` and `idTag` can also be set at the platform level, where they apply to discovered chargers too.
+
+Every optional service has its own switch in the settings form, both for all chargers and per charger:
+
+| Key | Default | Adds |
+|---|---|---|
+| `currentControl` | on | current dimmer |
+| `carConnectedSensor`, `faultSensor`, `chargeCompleteSensor` | on | the three contact sensors |
+| `accessLock`, `autostartSwitch`, `rebootSwitch`, `rearLedLight` | off | RFID lock, autostart, reboot, rear LED |
+| `singlePhaseSwitch` | `auto` | single-phase switch (`show` / `hide` to override) |
+| `outOfServiceSwitch`, `quietModeSwitch` | off | out of service, quiet mode |
+| `dlmDynamicSwitch`, `ecoModeSwitch`, `greenModeSwitch`, `gridControlSwitch` | off | one switch per load management mode (enable only the ones you need) |
+| `keepLastSessionEnergy` | on | last session's energy between sessions instead of 0 |
+| `eveHistory` | off | power history for the Eve app |
 
 ## Automation ideas
 
 - **"Car is charged" notification**: automate on the *Charge Complete* contact sensor opening. It only fires when the car stops drawing on its own while still plugged in — a manual stop does not trigger it.
 - **Plug-in reminder or actions**: automate on the *Car Connected* sensor opening (e.g. turn on the garage light, start charging if autostart is off).
-- **Solar surplus charging**: on phase-switching chargers, flip the *Single Phase* switch from a scene or schedule to limit charging to one phase while your inverter covers it.
+- **Solar surplus charging**: turn on *Eco Mode* (or *Green Mode*) on a sunny morning schedule and back off in the evening, which returns the charger to the mode it was in before; on phase-switching chargers the *Single Phase* switch also limits charging to one phase while your inverter covers it.
+- **Night mode**: turn *Quiet Mode* on at bedtime and off in the morning, so the display, the front LED and the buzzer stay dark overnight.
 - **Fault alert**: automate a notification on the *Fault* sensor opening.
 - Siri understands the services by name: *"Set the charger current to 50%"*, *"Turn on the charger"*, *"Set the charger rear LED to blue"*.
 
@@ -76,6 +93,7 @@ Chargers can also be configured explicitly via the Homebridge UI, or manually; e
 - The plugin polls the charger (default every 15 s); state changes made elsewhere (app, RFID card, cable) appear within one poll cycle.
 - The current-limit dimmer writes the charger's persistent configuration; the debounced slider makes sure only the final value is written.
 - Beware of "turn off all the lights" style scenes if you enable the dimmer: the bulb's off switch stops charging. Disable `currentControl` if that bothers you.
+- Keep the *Dynamic Load* switch out of "everything off" scenes: turning it off can leave load management off, and then the charger no longer protects the house main fuse (the log warns when that happens).
 
 ## Firmware compatibility
 
@@ -100,6 +118,7 @@ The plugin adapts to what the charger reports:
 ```bash
 npm install
 npm run build
+npm test
 ```
 
 ## License

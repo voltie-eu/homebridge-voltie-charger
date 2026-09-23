@@ -8,9 +8,14 @@ import {
   isFault,
   isSwitchedOn,
   errorText,
+  isAuthError,
   VoltieApiError,
   VoltieClient,
 } from './client';
+import { join } from 'path';
+
+import { ChargeCompleteDetector } from './chargeComplete';
+import { EveEnergyHistory, removeEveHistory } from './eveHistory';
 import type { ChargerConfigEntry, VoltieChargerPlatform } from './platform';
 import { CURRENT_LIMIT_FALLBACK_MAX_A, CURRENT_LIMIT_MIN_A, START_NAME } from './settings';
 
@@ -27,8 +32,37 @@ const REAR_LED_DURATION_S = 3600;
 const BRIGHTNESS_DEBOUNCE_MS = 500;
 const FAILURES_BEFORE_UNREACHABLE = 2;
 
+// Quiet mode = these three off together (the rear LED has its own lamp).
+const QUIET_KEYS = ['conf_disp_enabled', 'conf_front_led_enabled', 'conf_buzzer_enabled'] as const;
+// conf_dlm_mode values (spec 6.4): one field, so at most one mode is on.
+const DLM_MODE_OFF = 0;
+const DLM_MODE_DYNAMIC = 1;
+const DLM_MODE_GRID_CONTROL = 4;
+
+type ModeSwitchKey = 'dlmDynamicSwitch' | 'ecoModeSwitch' | 'greenModeSwitch' | 'gridControlSwitch';
+
+/** One HomeKit switch per load management mode; each can be enabled on its
+ * own in the plugin settings. */
+const MODE_SWITCHES: ReadonlyArray<{ key: ModeSwitchKey; subtype: string; label: string; mode: number }> = [
+  { key: 'dlmDynamicSwitch', subtype: 'dlm-dynamic', label: 'Dynamic Load', mode: DLM_MODE_DYNAMIC },
+  { key: 'ecoModeSwitch', subtype: 'dlm-eco', label: 'Eco Mode', mode: 2 },
+  { key: 'greenModeSwitch', subtype: 'dlm-green', label: 'Green Mode', mode: 3 },
+  { key: 'gridControlSwitch', subtype: 'dlm-grid', label: 'Grid Control', mode: DLM_MODE_GRID_CONTROL },
+];
+
+interface LastSession {
+  cdrId?: number;
+  energy: number; // kWh
+  final: boolean; // read from the closed CDR, not a live snapshot
+}
+
+export interface AccessoryHooks {
+  /** Called once each time the charger turns unreachable. */
+  onUnreachable?: () => void;
+}
+
 export class VoltieChargerAccessory {
-  private readonly client: VoltieClient;
+  private client: VoltieClient;
 
   private readonly outletService: Service;
   private currentService?: Service;
@@ -40,21 +74,27 @@ export class VoltieChargerAccessory {
   private singlePhaseService?: Service;
   private rebootService?: Service;
   private rearLedService?: Service;
+  private outOfServiceService?: Service;
+  private quietModeService?: Service;
+  private readonly modeServices = new Map<number, Service>();
+  private history?: EveEnergyHistory;
+
+  private lastSession?: LastSession;
+  private cdrFetchFor?: number;
 
   private status: ChargerStatus = {};
   private config: ChargerConfig = {};
   private consecutiveFailures = 0;
   private infoPopulated = false;
   private hasPolled = false;
+  private stopped = false;
   // Bumped on every optimistic write and every poll start, so a poll response
   // that raced with a newer write (or a newer poll) is discarded instead of
   // snapping HomeKit back to stale values.
   private stateGeneration = 0;
 
   private lastLockState?: number;
-  private prevActivelyCharging?: boolean;
-  private chargeComplete = false;
-  private chargeCompleteCandidatePolls = 0;
+  private readonly chargeComplete = new ChargeCompleteDetector();
 
   private brightnessTimer?: NodeJS.Timeout;
   private refreshTimer?: NodeJS.Timeout;
@@ -70,18 +110,29 @@ export class VoltieChargerAccessory {
     private readonly platform: VoltieChargerPlatform,
     private readonly accessory: PlatformAccessory,
     private readonly entry: ResolvedEntry,
+    private readonly hooks: AccessoryHooks = {},
   ) {
     this.client = new VoltieClient(entry.host!, entry.port, entry.username, entry.password);
+    if (entry.idTag && !VoltieClient.isValidIdTag(entry.idTag)) {
+      this.platform.log.warn(
+        '[%s] idTag "%s" does not match the charger\'s format (8+ characters: letters, digits, _ or -); '
+        + 'the charger will ignore it, and a start in RFID mode will fail',
+        entry.name, entry.idTag,
+      );
+    }
     if (this.accessory.context.rearLed) {
       this.rearLed = { ...this.rearLed, ...this.accessory.context.rearLed };
     }
+    this.lastSession = this.accessory.context.lastSession;
 
     const { Service: S, Characteristic: C } = this.platform;
 
     this.accessory.getService(S.AccessoryInformation)!
       .setCharacteristic(C.Manufacturer, 'Voltie')
       .setCharacteristic(C.Model, 'Voltie Charger')
-      .setCharacteristic(C.SerialNumber, `${entry.host}:${entry.port}`);
+      // The real charger ID once known (cached from an earlier run), so the
+      // serial number doesn't flip to host:port and back on every restart.
+      .setCharacteristic(C.SerialNumber, this.accessory.context.chargerId ?? `${entry.host}:${entry.port}`);
 
     // Outlet: On = charging or charging enabled, OutletInUse = car connected.
     // Eve power/energy characteristics live here so Eve-style apps chart
@@ -109,6 +160,19 @@ export class VoltieChargerAccessory {
     this.setupSinglePhaseSwitch();
     this.setupRebootSwitch();
     this.setupRearLed();
+    this.outOfServiceService = this.setupConfigSwitch('out-of-service', 'Out of Service', this.entry.outOfServiceSwitch,
+      () => this.config.conf_out_of_service === true,
+      (on) => this.writeConfig({ conf_out_of_service: on }, `${on ? 'Took' : 'Returned'} the charger ${on ? 'out of' : 'to'} service`));
+    this.quietModeService = this.setupConfigSwitch('quiet-mode', 'Quiet Mode', this.entry.quietModeSwitch,
+      () => this.quietOn(), (on) => this.setQuietMode(on));
+    for (const { key, subtype, label, mode } of MODE_SWITCHES) {
+      const service = this.setupConfigSwitch(subtype, label, this.entry[key],
+        () => this.config.conf_dlm_mode === mode, (on) => this.setLoadMode(mode, label, on));
+      if (service) {
+        this.modeServices.set(mode, service);
+      }
+    }
+    this.setupEveHistory();
     // Linking the secondary services to the primary Outlet makes third-party
     // HomeKit apps (Eve, Controller) render the charger as one grouped block,
     // and ConfiguredName labels the sub-tiles in single-tile view.
@@ -123,6 +187,9 @@ export class VoltieChargerAccessory {
       [this.singlePhaseService, 'Single Phase'],
       [this.rebootService, 'Reboot'],
       [this.rearLedService, 'Rear LED'],
+      [this.outOfServiceService, 'Out of Service'],
+      [this.quietModeService, 'Quiet Mode'],
+      ...MODE_SWITCHES.map(({ mode, label }): [Service | undefined, string] => [this.modeServices.get(mode), label]),
     ];
     for (const [service, label] of secondaries) {
       if (service) {
@@ -142,12 +209,26 @@ export class VoltieChargerAccessory {
     void this.poll();
     const timer = setInterval(() => void this.poll(), this.entry.pollInterval * 1000);
     this.platform.api.on('shutdown', () => {
+      this.stopped = true;
       clearInterval(timer);
       clearTimeout(this.brightnessTimer);
       clearTimeout(this.refreshTimer);
       clearTimeout(this.rearLedTimer);
       clearTimeout(this.rebootResetTimer);
+      this.history?.stop();
     });
+  }
+
+  /** A discovered charger got a new DHCP lease: talk to the new address. */
+  updateHost(host: string): void {
+    if (host === this.entry.host) {
+      return;
+    }
+    this.platform.log.info('[%s] Charger moved from %s to %s', this.entry.name, this.entry.host, host);
+    this.entry.host = host;
+    this.client = new VoltieClient(host, this.entry.port, this.entry.username, this.entry.password);
+    this.stateGeneration += 1;
+    void this.poll();
   }
 
   // ---- service setup ----
@@ -383,6 +464,39 @@ export class VoltieChargerAccessory {
       });
   }
 
+  /** A Switch bound to charger config: added when enabled in the plugin
+   * settings, removed (with its cached state) when disabled. */
+  private setupConfigSwitch(
+    subtype: string,
+    label: string,
+    enabled: boolean | undefined,
+    read: () => boolean,
+    write: (on: boolean) => Promise<void>,
+  ): Service | undefined {
+    const { Service: S, Characteristic: C } = this.platform;
+    const existing = this.accessory.getServiceById(S.Switch, subtype);
+    if (enabled !== true) {
+      if (existing) {
+        this.accessory.removeService(existing);
+      }
+      return undefined;
+    }
+    const service = existing ?? this.accessory.addService(S.Switch, `${this.entry.name} ${label}`, subtype);
+    service.getCharacteristic(C.On)
+      .onGet(() => this.guarded(read))
+      .onSet((value) => write(value === true));
+    return service;
+  }
+
+  private setupEveHistory(): void {
+    if (this.entry.eveHistory !== true) {
+      removeEveHistory(this.accessory);
+      return;
+    }
+    const file = join(this.platform.api.user.storagePath(), 'voltie-charger', `history-${this.accessory.UUID}.json`);
+    this.history = new EveEnergyHistory(this.platform.api, this.accessory, file, this.platform.log);
+  }
+
   /**
    * Default ConfiguredName carries the charger name too ("Voltie 77ED RFID
    * Lock"), because push notifications show only room + service name, and
@@ -395,8 +509,15 @@ export class VoltieChargerAccessory {
     service.addOptionalCharacteristic(ConfiguredName);
     const current = service.getCharacteristic(ConfiguredName).value;
     const desired = label === 'Charging' ? this.entry.name : `${this.entry.name} ${label}`;
-    if (!current || current === label) {
+    // Remember what we set, so renaming the charger in the plugin config
+    // carries through, while a rename made in the Home app (which no longer
+    // matches our last value) is still left alone.
+    const autoNames: Record<string, string> = this.accessory.context.autoNames ?? {};
+    const key = service.subtype ?? label;
+    if (!current || current === label || current === autoNames[key]) {
       service.updateCharacteristic(ConfiguredName, desired);
+      autoNames[key] = desired;
+      this.accessory.context.autoNames = autoNames;
     }
   }
 
@@ -590,6 +711,166 @@ export class VoltieChargerAccessory {
     }, BRIGHTNESS_DEBOUNCE_MS);
   }
 
+  /** One PUT /config with optimistic local update and readback. */
+  private async writeConfig(values: Record<string, unknown>, done: string): Promise<void> {
+    try {
+      this.stateGeneration += 1;
+      await this.client.setConfig(values);
+      Object.assign(this.config, values);
+      this.platform.log.info('[%s] %s', this.entry.name, done);
+    } catch (error) {
+      this.platform.log.error('[%s] Failed to change setting (%s): %s',
+        this.entry.name, Object.keys(values).join(', '), errorText(error));
+      throw this.communicationError();
+    } finally {
+      this.scheduleRefresh();
+    }
+  }
+
+  private quietKeys(): Array<typeof QUIET_KEYS[number]> {
+    return QUIET_KEYS.filter((key) => typeof this.config[key] === 'boolean');
+  }
+
+  private quietOn(): boolean {
+    const keys = this.quietKeys();
+    return keys.length > 0 && keys.every((key) => this.config[key] === false);
+  }
+
+  /** On: display, front LED and buzzer off. Off: restores what was on
+   * before, so a display the user keeps off on purpose stays off. */
+  private async setQuietMode(on: boolean): Promise<void> {
+    const keys = this.quietKeys();
+    const values: Record<string, boolean> = {};
+    if (on) {
+      if (!this.quietOn()) {
+        this.accessory.context.quietRestore = Object.fromEntries(keys.map((key) => [key, this.config[key]]));
+      }
+      keys.forEach((key) => (values[key] = false));
+    } else {
+      const saved: Record<string, unknown> = this.accessory.context.quietRestore ?? {};
+      keys.forEach((key) => (values[key] = saved[key] !== false));
+      // All three were off before too: "quiet off" must still turn them on.
+      if (keys.every((key) => values[key] === false)) {
+        keys.forEach((key) => (values[key] = true));
+      }
+    }
+    await this.writeConfig(values, `Quiet mode ${on ? 'on (display, front LED and buzzer off)' : 'off'}`);
+    if (!on) {
+      delete this.accessory.context.quietRestore;
+    }
+  }
+
+  /**
+   * On: switch the charger to this mode (the other mode tiles go off, it is a
+   * single setting). Off: back to the mode that was active before, the same
+   * way the Voltie app would leave it. Without a remembered mode, the solar
+   * modes fall back to Dynamic, Dynamic and Grid Control to off.
+   */
+  private async setLoadMode(mode: number, label: string, on: boolean): Promise<void> {
+    const current = this.config.conf_dlm_mode;
+    if (on) {
+      if (current === mode) {
+        return;
+      }
+      if (typeof current === 'number') {
+        this.accessory.context.dlmRestoreMode = current;
+      }
+      await this.writeConfig({ conf_dlm_mode: mode }, `${label} on`);
+      this.pushModeSwitches();
+      if (mode !== DLM_MODE_GRID_CONTROL) {
+        void this.warnIfNoMeter(label);
+      }
+      return;
+    }
+    if (current !== mode) {
+      return; // already another mode; nothing to undo
+    }
+    const saved = this.accessory.context.dlmRestoreMode;
+    const fallback = mode === DLM_MODE_DYNAMIC || mode === DLM_MODE_GRID_CONTROL ? DLM_MODE_OFF : DLM_MODE_DYNAMIC;
+    const restore = typeof saved === 'number' && saved !== mode ? saved : fallback;
+    const restoredLabel = MODE_SWITCHES.find((entry) => entry.mode === restore)?.label ?? 'load management off';
+    await this.writeConfig({ conf_dlm_mode: restore }, `${label} off (now: ${restoredLabel})`);
+    delete this.accessory.context.dlmRestoreMode;
+    this.pushModeSwitches();
+    if (restore === DLM_MODE_OFF) {
+      this.platform.log.warn(
+        '[%s] Load management is now off: the charger no longer limits its current to the house main fuse',
+        this.entry.name,
+      );
+    }
+  }
+
+  private pushModeSwitches(): void {
+    for (const [mode, service] of this.modeServices) {
+      service.updateCharacteristic(this.platform.Characteristic.On, this.config.conf_dlm_mode === mode);
+    }
+  }
+
+  /** Dynamic, Eco and Green need an external meter (SensorBox,
+   * VoltieMeter); without one the charger accepts the mode but has nothing
+   * to regulate on. Grid Control works without a meter. */
+  private async warnIfNoMeter(label: string): Promise<void> {
+    try {
+      const power = await this.client.getPower();
+      if (power.dlm_valid === false) {
+        this.platform.log.warn(
+          '[%s] %s is on, but the charger reports no external meter data; '
+          + 'this mode needs a SensorBox or VoltieMeter at the grid connection',
+          this.entry.name, label,
+        );
+      }
+    } catch (error) {
+      this.platform.log.debug('[%s] Meter check after enabling %s failed: %s', this.entry.name, label, errorText(error));
+    }
+  }
+
+  /** Session energy for the Eve "total" field: the live session, or with
+   * keepLastSessionEnergy the last finished one instead of 0 between them. */
+  private sessionEnergy(): number {
+    // Watt-hour resolution, the characteristic's minStep.
+    const kwh = (value: number) => Math.round(Math.max(0, value) * 1000) / 1000;
+    const live = this.status.cdr?.chg_energy;
+    if (typeof live === 'number') {
+      return kwh(live);
+    }
+    if (this.entry.keepLastSessionEnergy !== false && this.lastSession) {
+      return kwh(this.lastSession.energy);
+    }
+    return 0;
+  }
+
+  private trackSessionEnergy(): void {
+    const cdr = this.status.cdr;
+    if (cdr && typeof cdr.chg_energy === 'number') {
+      this.lastSession = { cdrId: cdr.cdr_id, energy: cdr.chg_energy, final: false };
+      this.accessory.context.lastSession = this.lastSession;
+      return;
+    }
+    if (this.entry.keepLastSessionEnergy === false) {
+      return;
+    }
+    // No open session: read the closing value of the last record once (the
+    // live snapshot misses the last poll interval, and after a restart there
+    // is none at all).
+    const lastId = this.status.last_cdr;
+    if (typeof lastId !== 'number' || lastId <= 0 || this.cdrFetchFor === lastId) {
+      return;
+    }
+    if (this.lastSession?.final && this.lastSession.cdrId === lastId) {
+      return;
+    }
+    this.cdrFetchFor = lastId;
+    this.client.getCdr(lastId)
+      .then((record) => {
+        if (record && typeof record.chg_energy === 'number') {
+          this.lastSession = { cdrId: lastId, energy: record.chg_energy, final: true };
+          this.accessory.context.lastSession = this.lastSession;
+          this.outletService.updateCharacteristic(this.platform.eve.TotalConsumption, this.sessionEnergy());
+        }
+      })
+      .catch((error) => this.platform.log.debug('[%s] Reading CDR %d failed: %s', this.entry.name, lastId, errorText(error)));
+  }
+
   // ---- polling ----
 
   private scheduleRefresh(): void {
@@ -598,6 +879,11 @@ export class VoltieChargerAccessory {
   }
 
   private async poll(): Promise<void> {
+    // No requests after Homebridge shut down (a refresh or host change can
+    // still be queued at that point).
+    if (this.stopped) {
+      return;
+    }
     const generation = ++this.stateGeneration;
     try {
       const [status, config] = await Promise.all([
@@ -617,20 +903,19 @@ export class VoltieChargerAccessory {
       // partial read cannot flip lock/switch states and spam notifications.
       this.config = { ...this.config, ...config };
       this.hasPolled = true;
+      this.trackSessionEnergy();
+      this.history?.addSample(Math.max(0, (status.charge_power ?? 0) * 1000));
       this.pushState();
     } catch (error) {
       this.consecutiveFailures += 1;
-      if (
-        this.consecutiveFailures === 1
-        && error instanceof VoltieApiError
-        && error.message.includes('Authentication')
-      ) {
+      if (this.consecutiveFailures === 1 && isAuthError(error)) {
         this.platform.log.warn(
           '[%s] The charger rejected the credentials; check the username/password in the plugin config',
           this.entry.name,
         );
       }
       if (this.consecutiveFailures === FAILURES_BEFORE_UNREACHABLE) {
+        this.hooks.onUnreachable?.();
         if (error instanceof VoltieApiError && error.code === 24) {
           this.platform.log.warn(
             '[%s] Charger firmware is too old for this plugin (HTTP API endpoint missing): %s',
@@ -656,7 +941,7 @@ export class VoltieChargerAccessory {
     );
     this.outletService.updateCharacteristic(
       this.platform.eve.TotalConsumption,
-      Math.max(0, this.status.cdr?.chg_energy ?? 0),
+      this.sessionEnergy(),
     );
     this.outletService.updateCharacteristic(
       this.platform.eve.Voltage,
@@ -687,6 +972,9 @@ export class VoltieChargerAccessory {
       this.platform.log.error('[%s] Failed to update Single Phase switch visibility: %s', this.entry.name, errorText(error));
     }
     this.singlePhaseService?.updateCharacteristic(C.On, this.config.conf_force_single_phase === 1);
+    this.outOfServiceService?.updateCharacteristic(C.On, this.config.conf_out_of_service === true);
+    this.quietModeService?.updateCharacteristic(C.On, this.quietOn());
+    this.pushModeSwitches();
 
     this.populateAccessoryInfo();
   }
@@ -701,6 +989,7 @@ export class VoltieChargerAccessory {
     }
     const info = this.accessory.getService(S.AccessoryInformation)!;
     info.updateCharacteristic(C.SerialNumber, this.status.charger_id);
+    this.accessory.context.chargerId = this.status.charger_id;
     const version = formatSwVersion(this.status.sw_ver);
     if (version) {
       info.updateCharacteristic(C.FirmwareRevision, version);
@@ -711,38 +1000,14 @@ export class VoltieChargerAccessory {
   // ---- value mapping ----
 
   private updateChargeComplete(): void {
-    const activelyCharging = isCharging(this.status);
-    const carConnected = isCarConnected(this.status);
-    // "Car finished" = the charger is still OFFERING current but the car
-    // stopped drawing. When DLM/eco/solar/grid modes pause the session, the
-    // charger offers 0 A — indistinguishable from "full" without this guard,
-    // and it would fire on every solar lull. Requiring the condition to hold
-    // for two polls also rides out brief car-side pauses.
-    const offered = this.status.current_offered;
-    const candidate = !activelyCharging
-      && carConnected
-      && this.status.charge_enabled === true
-      && typeof offered === 'number'
-      && offered >= CURRENT_LIMIT_MIN_A;
-    if (candidate && (this.prevActivelyCharging === true || this.chargeCompleteCandidatePolls > 0)) {
-      this.chargeCompleteCandidatePolls += 1;
-      if (this.chargeCompleteCandidatePolls >= 2 && !this.chargeComplete) {
-        this.platform.log.info('[%s] Charging finished (car stopped drawing while power is still offered)', this.entry.name);
-        this.chargeComplete = true;
-      }
-    } else if (!candidate) {
-      this.chargeCompleteCandidatePolls = 0;
+    if (this.chargeComplete.update(this.status)) {
+      this.platform.log.info('[%s] Charging finished (car stopped drawing while power is still offered)', this.entry.name);
     }
-    if (activelyCharging || !carConnected) {
-      this.chargeComplete = false;
-      this.chargeCompleteCandidatePolls = 0;
-    }
-    this.prevActivelyCharging = activelyCharging;
   }
 
   private chargeCompleteValue(): number {
     const { ContactSensorState } = this.platform.Characteristic;
-    return this.chargeComplete
+    return this.chargeComplete.isComplete
       ? ContactSensorState.CONTACT_NOT_DETECTED
       : ContactSensorState.CONTACT_DETECTED;
   }
@@ -834,7 +1099,7 @@ export class VoltieChargerAccessory {
   }
 }
 
-function hsvToRgbHex(hue: number, saturation: number): string {
+export function hsvToRgbHex(hue: number, saturation: number): string {
   const h = ((hue % 360) + 360) % 360;
   const s = Math.min(100, Math.max(0, saturation)) / 100;
   const c = s;
@@ -861,7 +1126,7 @@ function hsvToRgbHex(hue: number, saturation: number): string {
 }
 
 /** Decode the decimal-packed software version (e.g. 1003042 -> '1.3.42'). */
-function formatSwVersion(raw: unknown): string | undefined {
+export function formatSwVersion(raw: unknown): string | undefined {
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) {
     return undefined;

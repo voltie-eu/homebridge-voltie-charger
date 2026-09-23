@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.0
+
+New, each with its own switch in the settings form (for all chargers or per charger):
+
+- **Out of Service** switch: takes the charger out of service, for example during maintenance
+- **Quiet Mode** switch: display, front LED and buzzer off together, for example at night; turning it off restores what was on before
+- **Load management mode switches**: Dynamic Load, Eco Mode, Green Mode and Grid Control, each enabled on its own. They work like radio buttons over the charger's single mode setting, and turning the active one off returns to the mode used before. The log warns when a mode needs an external meter the charger does not report, and when load management ends up off
+- The Eve energy field keeps showing the **last session's energy** between sessions instead of dropping to 0 (on by default)
+- **Eve power history**: charging power recorded every 10 minutes for the graphs in the Eve app, kept for up to 28 days. Built in, without the heavy fakegato-history dependency (which would add over 200 MB to every install)
+
+Fixes and improvements:
+
+- Discovery asks the network three times within its 8 seconds instead of once: a charger on Wi-Fi power save often missed the single query and only appeared at the next browse, 10 minutes later
+- A discovered charger that gets a new IP address from the router is now followed automatically. Before, it stayed "No Response" until Homebridge was restarted; now the next network browse moves it to the new address, and a charger that stops answering triggers that browse right away
+- When the charger answers "internal timeout" or "internal error" (a documented, rare response), the plugin now treats it as a failed request. It used to be read as an empty status, which flipped every sensor to "no car, not charging" for one poll and sent false notifications, and a failed setting change looked successful
+- Poll interval and RFID id_tag can now be set for all chargers in the settings form (the plugin already supported them, but the form had no field), so discovered chargers in RFID mode can be started from HomeKit too. The id_tag format is validated, with a log warning when the charger would ignore it
+- Renaming a charger in the plugin settings now renames its HomeKit tiles too; names changed in the Home app are still kept
+- A charger skipped during discovery (HTTP API disabled or password protected) is reported once instead of every 10 minutes
+- The serial number no longer switches to host:port and back on every restart
+- Clearer network errors in the log (for example ECONNREFUSED or "no answer within 6 s" instead of "fetch failed")
+- Tested with Homebridge 2.x and Node.js 24; unit tests and npm provenance added to the build
+
 ## 0.1.10
 
 - While a session is running, the current dimmer now shows the current the charger is actually offering instead of the stored configuration limit, which can sit dormant until its next write and made the dimmer misleading (e.g. 0% while charging at 16 A). Writing the dimmer still sets the configuration limit, which takes effect immediately on a running session

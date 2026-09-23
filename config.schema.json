@@ -100,6 +100,67 @@
         "default": false,
         "description": "Exposes the charger's rear LED strip as a color lamp. On/off is the charger's persistent LED setting; a colour set from HomeKit is a temporary one-hour effect, after which the LED returns to the charger's own behaviour."
       },
+      "outOfServiceSwitch": {
+        "title": "Out of service switch (all chargers)",
+        "type": "boolean",
+        "default": false,
+        "description": "On = the charger is out of service and cannot be used, for example during maintenance."
+      },
+      "quietModeSwitch": {
+        "title": "Quiet mode switch (all chargers)",
+        "type": "boolean",
+        "default": false,
+        "description": "On = display, front LED and buzzer off, for example at night. Off restores what was on before. The rear LED has its own lamp."
+      },
+      "dlmDynamicSwitch": {
+        "title": "Dynamic load management switch (all chargers)",
+        "type": "boolean",
+        "default": false,
+        "description": "On = Dynamic mode: the charger adapts its current to the house consumption so the main fuse never trips. Needs an external meter (SensorBox or VoltieMeter). Off returns to the mode used before, or turns load management off."
+      },
+      "ecoModeSwitch": {
+        "title": "Eco mode switch (all chargers)",
+        "type": "boolean",
+        "default": false,
+        "description": "On = Eco mode: charges from solar surplus, topped up from the grid to the 6 A minimum. Needs an external meter. Off returns to the mode used before."
+      },
+      "greenModeSwitch": {
+        "title": "Green mode switch (all chargers)",
+        "type": "boolean",
+        "default": false,
+        "description": "On = Green mode: charges from solar surplus only. Single-charger installations only; needs an external meter. Off returns to the mode used before."
+      },
+      "gridControlSwitch": {
+        "title": "Grid Control switch (all chargers)",
+        "type": "boolean",
+        "default": false,
+        "description": "On = Grid Control: starts charging when the grid voltage rises, so the solar inverter does not shut down. Works without a meter. Off returns to the mode used before."
+      },
+      "keepLastSessionEnergy": {
+        "title": "Keep last session energy (all chargers)",
+        "type": "boolean",
+        "default": true,
+        "description": "Between sessions the Eve energy field shows the energy of the last session instead of 0."
+      },
+      "eveHistory": {
+        "title": "Eve power history (all chargers)",
+        "type": "boolean",
+        "default": false,
+        "description": "Records the charging power every 10 minutes for the graphs in the Eve app (the Home app does not show it). Kept for up to 28 days in the Homebridge storage folder."
+      },
+      "pollInterval": {
+        "title": "Poll interval in seconds (all chargers)",
+        "type": "integer",
+        "default": 15,
+        "minimum": 5,
+        "maximum": 300
+      },
+      "idTag": {
+        "title": "RFID id_tag for remote start (all chargers)",
+        "type": "string",
+        "pattern": "^[0-9A-Za-z_-]{8,}$",
+        "description": "Only needed when a charger is in RFID mode: HomeKit starts then carry this RFID id. At least 8 characters: letters, digits, _ or -."
+      },
       "chargers": {
         "title": "Chargers",
         "type": "array",
@@ -143,7 +204,8 @@
             "idTag": {
               "title": "RFID id_tag for remote start",
               "type": "string",
-              "description": "Optional. Sent with the start command when the charger requires RFID authorization."
+              "description": "Optional. Sent with the start command when the charger requires RFID authorization. At least 8 characters: letters, digits, _ or -.",
+              "pattern": "^[0-9A-Za-z_-]{8,}$"
             },
             "currentControl": {
               "title": "Charging current dimmer (Lightbulb)",
@@ -215,6 +277,54 @@
               "type": "boolean",
               "default": false,
               "description": "Exposes the charger's rear LED strip as a color lamp. On/off is the charger's persistent LED setting; a colour set from HomeKit is a temporary one-hour effect, after which the LED returns to the charger's own behaviour."
+            },
+            "outOfServiceSwitch": {
+              "title": "Out of service switch",
+              "type": "boolean",
+              "default": false,
+              "description": "On = the charger is out of service and cannot be used, for example during maintenance."
+            },
+            "quietModeSwitch": {
+              "title": "Quiet mode switch",
+              "type": "boolean",
+              "default": false,
+              "description": "On = display, front LED and buzzer off, for example at night. Off restores what was on before. The rear LED has its own lamp."
+            },
+            "dlmDynamicSwitch": {
+              "title": "Dynamic load management switch",
+              "type": "boolean",
+              "default": false,
+              "description": "On = Dynamic mode: the charger adapts its current to the house consumption so the main fuse never trips. Needs an external meter (SensorBox or VoltieMeter). Off returns to the mode used before, or turns load management off."
+            },
+            "ecoModeSwitch": {
+              "title": "Eco mode switch",
+              "type": "boolean",
+              "default": false,
+              "description": "On = Eco mode: charges from solar surplus, topped up from the grid to the 6 A minimum. Needs an external meter. Off returns to the mode used before."
+            },
+            "greenModeSwitch": {
+              "title": "Green mode switch",
+              "type": "boolean",
+              "default": false,
+              "description": "On = Green mode: charges from solar surplus only. Single-charger installations only; needs an external meter. Off returns to the mode used before."
+            },
+            "gridControlSwitch": {
+              "title": "Grid Control switch",
+              "type": "boolean",
+              "default": false,
+              "description": "On = Grid Control: starts charging when the grid voltage rises, so the solar inverter does not shut down. Works without a meter. Off returns to the mode used before."
+            },
+            "keepLastSessionEnergy": {
+              "title": "Keep last session energy",
+              "type": "boolean",
+              "default": true,
+              "description": "Between sessions the Eve energy field shows the energy of the last session instead of 0."
+            },
+            "eveHistory": {
+              "title": "Eve power history",
+              "type": "boolean",
+              "default": false,
+              "description": "Records the charging power every 10 minutes for the graphs in the Eve app (the Home app does not show it). Kept for up to 28 days in the Homebridge storage folder."
             }
           },
           "required": [
@@ -240,7 +350,7 @@
     },
     {
       "type": "fieldset",
-      "title": "Optional services (all chargers)",
+      "title": "Optional services and settings (all chargers)",
       "expandable": true,
       "expanded": false,
       "items": [
@@ -252,7 +362,17 @@
         "autostartSwitch",
         "singlePhaseSwitch",
         "rebootSwitch",
-        "rearLedLight"
+        "rearLedLight",
+        "outOfServiceSwitch",
+        "quietModeSwitch",
+        "dlmDynamicSwitch",
+        "ecoModeSwitch",
+        "greenModeSwitch",
+        "gridControlSwitch",
+        "keepLastSessionEnergy",
+        "eveHistory",
+        "pollInterval",
+        "idTag"
       ]
     },
     {
@@ -281,7 +401,15 @@
             "chargers[].autostartSwitch",
             "chargers[].singlePhaseSwitch",
             "chargers[].rebootSwitch",
-            "chargers[].rearLedLight"
+            "chargers[].rearLedLight",
+            "chargers[].outOfServiceSwitch",
+            "chargers[].quietModeSwitch",
+            "chargers[].dlmDynamicSwitch",
+            "chargers[].ecoModeSwitch",
+            "chargers[].greenModeSwitch",
+            "chargers[].gridControlSwitch",
+            "chargers[].keepLastSessionEnergy",
+            "chargers[].eveHistory"
           ]
         }
       ]

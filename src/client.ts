@@ -11,6 +11,7 @@ export enum EvseState {
 }
 
 export interface ChargerCdr {
+  cdr_id?: number;
   chg_energy?: number; // kWh
   chg_time?: number; // s
   idle_time?: number; // s
@@ -31,12 +32,19 @@ export interface ChargerStatus {
   charger_id?: string;
   sw_ver?: unknown;
   fw_ver?: unknown;
-  cdr?: ChargerCdr;
+  first_cdr?: number;
+  last_cdr?: number;
+  cdr?: ChargerCdr | null; // null while no session is open
   [key: string]: unknown;
 }
 
 export interface ChargerConfig {
   conf_rear_led_enabled?: boolean;
+  conf_front_led_enabled?: boolean;
+  conf_disp_enabled?: boolean;
+  conf_buzzer_enabled?: boolean;
+  conf_out_of_service?: boolean;
+  conf_dlm_mode?: number;
   conf_current_limit?: number;
   conf_autostart_enabled?: number;
   conf_access_mode?: number;
@@ -58,10 +66,34 @@ export function errorText(error: unknown): string {
 }
 
 export class VoltieApiError extends Error {
-  constructor(message: string, readonly code?: number) {
+  constructor(message: string, readonly code?: number, readonly authFailed = false) {
     super(message);
     this.name = 'VoltieApiError';
   }
+}
+
+/** True when the charger rejected the HTTP basic-auth credentials. */
+export function isAuthError(error: unknown): boolean {
+  return error instanceof VoltieApiError && error.authFailed;
+}
+
+// fetch() reports every network failure as "TypeError: fetch failed"; the
+// useful part (ECONNREFUSED, EHOSTUNREACH, timeout) sits in error.cause.
+function describeFetchError(error: unknown): string {
+  if (error instanceof Error && error.name === 'TimeoutError') {
+    return `no answer within ${REQUEST_TIMEOUT_MS / 1000} s`;
+  }
+  const cause = error instanceof Error ? (error as Error & { cause?: unknown }).cause : undefined;
+  if (cause && typeof cause === 'object') {
+    const { code, message } = cause as { code?: unknown; message?: unknown };
+    if (typeof code === 'string') {
+      return code;
+    }
+    if (typeof message === 'string') {
+      return message;
+    }
+  }
+  return errorText(error);
 }
 
 export class VoltieConnectionError extends Error {
@@ -109,11 +141,11 @@ export class VoltieClient {
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (error) {
-      throw new VoltieConnectionError(`Error talking to charger (${endpoint}): ${error}`);
+      throw new VoltieConnectionError(`Error talking to charger (${endpoint}): ${describeFetchError(error)}`);
     }
 
     if (response.status === 401 || response.status === 403) {
-      throw new VoltieApiError(`Authentication rejected by charger (HTTP ${response.status})`);
+      throw new VoltieApiError(`Authentication rejected by charger (HTTP ${response.status})`, undefined, true);
     }
     if (response.status === 404 || response.status === 405) {
       // Endpoint missing means older firmware, not a network problem (spec section 3).
@@ -136,6 +168,14 @@ export class VoltieClient {
 
     const record = payload as Record<string, unknown>;
     const rawCode = record['error_code'];
+    // Spec 4.4: when the charger accepts a request but cannot finish it, the
+    // body is just {"status": "internal timeout" | "internal error"}, with no
+    // acknowledge block. Taken as success, an empty /status made every sensor
+    // flip to "no car / not charging" for one poll (and back on the next),
+    // and a write looked accepted while nothing was applied.
+    if ((rawCode === undefined || rawCode === null) && typeof record['status'] === 'string') {
+      throw new VoltieConnectionError(`Charger could not process ${method} ${endpoint}: ${record['status']}`);
+    }
     if (rawCode !== undefined && rawCode !== null) {
       const code = Number(rawCode);
       if (!Number.isFinite(code)) {
@@ -155,6 +195,19 @@ export class VoltieClient {
 
   async getConfig(): Promise<ChargerConfig> {
     return (await this.request('GET', 'config')) as ChargerConfig;
+  }
+
+  async getPower(): Promise<{ dlm_valid?: boolean; [key: string]: unknown }> {
+    const result = await this.request('GET', 'power');
+    const stat = result['power_stat'];
+    return stat && typeof stat === 'object' ? (stat as Record<string, unknown>) : {};
+  }
+
+  /** A stored charging record; null when it does not exist (spec 5.5). */
+  async getCdr(cdrId: number): Promise<ChargerCdr | null> {
+    const result = await this.request('GET', 'cdr', { params: { cdr_id: String(cdrId) } });
+    const cdr = result['cdr'];
+    return cdr && typeof cdr === 'object' ? (cdr as ChargerCdr) : null;
   }
 
   async setConfig(values: Record<string, unknown>): Promise<void> {
@@ -189,6 +242,12 @@ export class VoltieClient {
       color_rgb: `#${colorRgb.replace(/^#/, '').toUpperCase()}`,
       duration_sec: durationSec,
     });
+  }
+
+  /** Spec 5.3: an id_tag outside this format is dropped silently, and an
+   * RFID-mode charger then refuses to start. */
+  static isValidIdTag(idTag: string): boolean {
+    return /^[0-9A-Za-z_-]{8,}$/.test(idTag);
   }
 
   async start(name: string, idTag?: string): Promise<void> {
